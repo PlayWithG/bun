@@ -21,7 +21,11 @@ generateObjectModuleSourceCode(JSC::JSGlobalObject* globalObject,
         RETURN_IF_EXCEPTION(throwScope, void());
         gcUnprotectNullTolerant(object);
 
+        bool hasDefault = false;
         for (auto& entry : properties.releaseData()->propertyNameVector()) {
+            if (entry == vm.propertyNames->defaultKeyword)
+                hasDefault = true;
+
             auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
             JSValue value = object->get(globalObject, entry);
             if (scope.exception()) [[unlikely]] {
@@ -31,6 +35,11 @@ generateObjectModuleSourceCode(JSC::JSGlobalObject* globalObject,
             }
             exportNames.append(entry);
             exportValues.append(value);
+        }
+
+        if (!hasDefault) {
+            exportNames.append(vm.propertyNames->defaultKeyword);
+            exportValues.append(object);
         }
     };
 }
