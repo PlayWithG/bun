@@ -151,4 +151,6 @@ JSC_DECLARE_HOST_FUNCTION(Process_functionDlopen);
 // callback shims in src/js.
 JSC_DECLARE_HOST_FUNCTION(jsFunctionReportUncaughtException);
 
+void resetStdioForHotReload(Zig::GlobalObject* globalObject);
+
 } // namespace Bun
