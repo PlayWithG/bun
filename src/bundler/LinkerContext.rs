@@ -65,6 +65,7 @@ pub use crate::linker_context::static_route_visitor as StaticRouteVisitor;
 // do_step5 / create_exports_for_file are inherent methods on LinkerContext (see
 // `linker_context/doStep5.rs`), not free functions — no item re-export.
 pub(crate) use crate::linker_context::compute_cross_chunk_dependencies::compute_cross_chunk_dependencies;
+pub use crate::linker_context::convert_stmts_for_chunk::convert_stmts_for_chunk;
 pub use crate::linker_context::do_step5;
 pub(crate) use crate::linker_context::generate_chunks_in_parallel::generate_chunks_in_parallel;
 pub(crate) use crate::linker_context::post_process_css_chunk::post_process_css_chunk;
@@ -4223,7 +4224,10 @@ impl InsideWrapperPrefix {
 }
 
 impl InsideWrapperPrefix {
-    pub(crate) fn append_non_dependency(&mut self, stmt: Stmt) -> Result<(), AllocError> {
+    // `pub`: also called by the `Format::InternalBakeDev` statement
+    // conversion in `bun_runtime`'s bake module (see
+    // `crate::convert_stmts_for_chunk_hmr`).
+    pub fn append_non_dependency(&mut self, stmt: Stmt) -> Result<(), AllocError> {
         self.stmts.push(stmt);
         Ok(())
     }
@@ -4382,7 +4386,10 @@ impl StmtList {
         }
     }
 
-    pub(crate) fn append(&mut self, list: StmtListWhich, stmt: Stmt) {
+    // `pub`: also called by the `Format::InternalBakeDev` statement
+    // conversion in `bun_runtime`'s bake module (see
+    // `crate::convert_stmts_for_chunk_hmr`).
+    pub fn append(&mut self, list: StmtListWhich, stmt: Stmt) {
         match list {
             StmtListWhich::OutsideWrapperPrefix => self.outside_wrapper_prefix.push(stmt),
             StmtListWhich::InsideWrapperSuffix => self.inside_wrapper_suffix.push(stmt),
