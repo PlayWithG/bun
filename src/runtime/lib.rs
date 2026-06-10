@@ -38,6 +38,7 @@ pub mod shell;
 #[path = "api.rs"]
 pub mod api;
 pub mod dispatch;
+pub mod generated_classes_list;
 pub mod hw_exports;
 pub mod ipc;
 pub mod ipc_host;
@@ -49,7 +50,6 @@ pub mod napi;
 #[path = "../bun.js.rs"]
 pub mod run_main;
 pub mod timer;
-pub mod generated_classes_list;
 pub use generated_classes_list::Classes as GeneratedClassesList;
 pub mod generated_classes; // include!()s ${BUN_CODEGEN_DIR}/generated_classes.rs
 pub mod generated_host_exports; // include!()s ${BUN_CODEGEN_DIR}/generated_host_exports.rs
