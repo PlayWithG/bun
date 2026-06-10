@@ -1,20 +1,16 @@
 //! LAYERING: `Classes` is a flat namespace of
 //! `pub use` aliases mapping each `.classes.ts` class name to
-//! its native backing type. Every target lives under `bun.api`, `bun.webcore`,
-//! `bun.bake`, or `bun.SourceMap` — i.e. in the Rust crate graph, in
-//! `bun_runtime` / `bun_sql_jsc` / `bun_sourcemap_jsc`, all of which **depend
-//! on** `bun_jsc`. Re-exporting them from `bun_jsc` would create a hard cycle.
+//! its native backing type. Every target lives in `bun_runtime` /
+//! `bun_sql_jsc` / `bun_sourcemap_jsc`, all of which **depend on** `bun_jsc` —
+//! so this list lives here, not in `bun_jsc`, where re-exporting them would
+//! create a hard cycle. The public name is `bun_runtime::GeneratedClassesList`;
+//! `bun_jsc::GeneratedClassesList` is intentionally absent.
 //!
 //! The codegen output
 //! (`generated_classes.rs`) does **not** consume this list — it resolves each
 //! class to its Rust struct via `rustModuleResolver.resolveStruct`
 //! (`generate-classes.ts:2602`/`:3450`) and is `include!`d into `bun_runtime`
 //! where every backing type is already in scope.
-//!
-//! Resolution: this file is `#[path]`-mounted from **`bun_runtime/lib.rs`**
-//! (not `bun_jsc/lib.rs`) so every alias resolves via `crate::`. The public
-//! name is `bun_runtime::GeneratedClassesList`; `bun_jsc::GeneratedClassesList`
-//! is intentionally absent.
 
 #[allow(non_snake_case, unused_imports)]
 pub mod Classes {
@@ -61,7 +57,6 @@ pub mod Classes {
     pub use crate::api::js_bundler::BuildArtifact;
     pub use crate::api::js_bundler::JSBundler as Bundler;
     pub use crate::api::js_transpiler as Transpiler;
-    pub use crate::bake::framework_router::JSFrameworkRouter as FrameworkFileSystemRouter;
     pub(crate) use crate::crypto::MD4;
     pub(crate) use crate::crypto::MD5;
     pub(crate) use crate::crypto::SHA1;
@@ -72,6 +67,9 @@ pub mod Classes {
     pub(crate) use crate::crypto::SHA512_256;
     pub use crate::dns_jsc::Resolver as DNSResolver;
     pub use crate::ffi::FFI;
+    // Declared in `bake/FrameworkRouter.classes.ts` with an explicit
+    // `rustPath`; the alias is owned by the codegen output.
+    pub use crate::generated_classes::FrameworkFileSystemRouter;
     pub use crate::node::net::block_list as BlockList;
     pub use crate::node::node_fs_binding::Binding as NodeJSFS;
     pub use crate::node::node_fs_stat_watcher::StatWatcher;
