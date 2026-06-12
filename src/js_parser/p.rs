@@ -4418,12 +4418,8 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
         let mut why: &'a [u8] = b"";
         let mut where_: bun_ast::Range = bun_ast::Range::NONE;
         match strict_mode {
-            js_ast::StrictModeKind::ImplicitStrictModeImport => {
-                where_ = self.esm_import_keyword
-            }
-            js_ast::StrictModeKind::ImplicitStrictModeExport => {
-                where_ = self.esm_export_keyword
-            }
+            js_ast::StrictModeKind::ImplicitStrictModeImport => where_ = self.esm_import_keyword,
+            js_ast::StrictModeKind::ImplicitStrictModeExport => where_ = self.esm_export_keyword,
             js_ast::StrictModeKind::ImplicitStrictModeTopLevelAwait => {
                 where_ = self.top_level_await_keyword
             }
