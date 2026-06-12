@@ -1227,6 +1227,12 @@ pub struct FnOrArrowDataParse {
     pub(crate) allow_super_call: bool,
     pub(crate) allow_super_property: bool,
     pub(crate) is_top_level: bool,
+    /// True while parsing statements lexically outside every function and
+    /// arrow body, mirroring `FnOrArrowDataVisit::is_outside_fn_or_arrow`.
+    /// Unlike `is_top_level` (an await-permission flag gated on the
+    /// `top_level_await` feature), this is set unconditionally at the start
+    /// of the parse, so it does not vary with the output format.
+    pub(crate) is_outside_fn_or_arrow: bool,
     pub(crate) is_constructor: bool,
     pub(crate) is_typescript_declare: bool,
 
@@ -1255,6 +1261,7 @@ impl Default for FnOrArrowDataParse {
             allow_super_call: false,
             allow_super_property: false,
             is_top_level: false,
+            is_outside_fn_or_arrow: false,
             is_constructor: false,
             is_typescript_declare: false,
             has_argument_decorators: false,
