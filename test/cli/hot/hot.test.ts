@@ -872,6 +872,7 @@ describe("import.meta.hot", () => {
             writeFileSync(root, source + `\n// reload ${lines.length}\n`);
           } else {
             runner.kill();
+            break;
           }
         }
         if (lines.length >= 3) break;
@@ -964,6 +965,7 @@ describe("import.meta.hot", () => {
             writeFileSync(root, source + `\n// reload ${lines.length}\n`);
           } else {
             runner.kill();
+            break;
           }
         }
         if (lines.length >= 2) break;
@@ -1006,6 +1008,48 @@ describe("import.meta.hot", () => {
     const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
     expect({ stdout: stdout.trim(), stderr, exitCode }).toEqual({
       stdout: "ERR_INVALID_ARG_TYPE import.meta.hot.dispose() expects a function",
+      stderr: "",
+      exitCode: 0,
+    });
+  });
+
+  it("is undefined inside workers even under --hot", async () => {
+    const workerPath = join(cwd, "import-meta-hot-worker.ts");
+    const mainPath = join(cwd, "import-meta-hot-worker-main.ts");
+    writeFileSync(
+      workerPath,
+      `
+        // Workers are not reloaded under --hot, so import.meta.hot is undefined
+        // and unguarded calls fold away at transpile time.
+        import.meta.hot.dispose(() => { throw new Error("should not run"); });
+        self.postMessage({ hot: typeof import.meta.hot });
+      `,
+    );
+    writeFileSync(
+      mainPath,
+      `
+        const w = new Worker(${JSON.stringify(workerPath)});
+        w.onmessage = (e) => {
+          console.log(JSON.stringify({ main: typeof import.meta.hot, worker: e.data.hot }));
+          w.terminate();
+          process.exit(0);
+        };
+        w.onerror = (e) => {
+          console.error(String(e?.message ?? e));
+          process.exit(1);
+        };
+      `,
+    );
+    await using proc = spawn({
+      cmd: [bunExe(), "--hot", "--no-clear-screen", mainPath],
+      env: bunEnv,
+      cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+    expect({ stdout: stdout.trim(), stderr, exitCode }).toEqual({
+      stdout: JSON.stringify({ main: "object", worker: "undefined" }),
       stderr: "",
       exitCode: 0,
     });
