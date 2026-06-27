@@ -233,6 +233,7 @@ pub mod api {
         pub public_hoist_pattern: Option<PnpmMatcher>,
         pub hoist_pattern: Option<PnpmMatcher>,
         pub hoist: Option<bool>,
+        pub block_exotic_subdeps: Option<bool>,
     }
 
     #[repr(u8)]
