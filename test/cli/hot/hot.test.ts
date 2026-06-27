@@ -854,7 +854,7 @@ describe("import.meta.hot", () => {
       let stderr = "";
       const stderrDone = (async () => {
         for await (const chunk of runner.stderr) stderr += new TextDecoder().decode(chunk);
-      })();
+      })().catch(() => {});
 
       const lines: Record<string, unknown>[] = [];
       let buf = "";
@@ -948,7 +948,7 @@ describe("import.meta.hot", () => {
       let stderr = "";
       const stderrDone = (async () => {
         for await (const chunk of runner.stderr) stderr += new TextDecoder().decode(chunk);
-      })();
+      })().catch(() => {});
 
       const lines: Record<string, unknown>[] = [];
       let buf = "";
@@ -1004,8 +1004,10 @@ describe("import.meta.hot", () => {
       stderr: "pipe",
     });
     const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
-    expect(stderr).toBe("");
-    expect(stdout.trim()).toBe("ERR_INVALID_ARG_TYPE import.meta.hot.dispose() expects a function");
-    expect(exitCode).toBe(0);
+    expect({ stdout: stdout.trim(), stderr, exitCode }).toEqual({
+      stdout: "ERR_INVALID_ARG_TYPE import.meta.hot.dispose() expects a function",
+      stderr: "",
+      exitCode: 0,
+    });
   });
 });
