@@ -5711,7 +5711,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                 // `.e_binary` survives and without this arm an unused
                 // `export class C { ratio = 1/3 }` no longer tree-shakes.
                 //
-                // Uses the non-recursive `extract_numeric_value` rather
+                // Uses the non-recursive `extract_numeric_values` rather
                 // than `known_primitive`, whose recursion through
                 // `.bin_add` would stack-overflow on a million-deep
                 // `a+a+a+…` chain. For `.e_number`/inlined-enum operands
@@ -5723,8 +5723,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                 | js_ast::op::Code::BinDiv
                 | js_ast::op::Code::BinRem
                 | js_ast::op::Code::BinPow => {
-                    if ex.left.data.extract_numeric_value().is_some()
-                        && ex.right.data.extract_numeric_value().is_some()
+                    if js_ast::Expr::extract_numeric_values(&ex.left.data, &ex.right.data).is_some()
                     {
                         return true;
                     }

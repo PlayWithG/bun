@@ -347,7 +347,7 @@ impl SideEffects {
                     // rejected folds survive as `.e_binary` and without
                     // this arm an unused `1/3;` would be kept.
                     //
-                    // Uses the non-recursive `extract_numeric_value`, not
+                    // Uses the non-recursive `extract_numeric_values`, not
                     // `known_primitive`, whose recursion through `.bin_add`
                     // would stack-overflow on a million-deep `a+a+a+…`
                     // chain. For `.e_number`/inlined-enum operands
@@ -360,9 +360,7 @@ impl SideEffects {
                     | Op::Code::BinDiv
                     | Op::Code::BinRem
                     | Op::Code::BinPow => {
-                        if bin.left.data.extract_numeric_value().is_some()
-                            && bin.right.data.extract_numeric_value().is_some()
-                        {
+                        if Expr::extract_numeric_values(&bin.left.data, &bin.right.data).is_some() {
                             return None;
                         }
                     }
