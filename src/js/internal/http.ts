@@ -75,6 +75,7 @@ const serverSymbol = Symbol.for("::bunternal::");
 const kPendingCallbacks = Symbol("pendingCallbacks");
 const kRequest = Symbol("request");
 const kCloseCallback = Symbol("closeCallback");
+const kSNIContexts = Symbol("sniContexts");
 
 export const enum ClientRequestEmitState {
   socket = 1,
@@ -597,6 +598,7 @@ export {
   kRequest,
   kRes,
   kReusedSocket,
+  kSNIContexts,
   kSignal,
   kSocketPath,
   kTimeoutTimer,
