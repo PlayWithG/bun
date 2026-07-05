@@ -1550,7 +1550,7 @@ impl Run<'_> {
         }
 
         vm.on_unhandled_rejection = Run::on_unhandled_rejection_before_close;
-        let _ = vm.global().handle_rejected_promises();
+        let _ = vm.event_loop_ref().drain_rejected_promises();
         vm.on_exit();
 
         if ANY_UNHANDLED.load(Ordering::Relaxed) {
