@@ -1381,6 +1381,7 @@ function replyMissingHostHeader(socket) {
 }
 
 const kBytesWritten = Symbol("kBytesWritten");
+const kBytesRead = Symbol("kBytesRead");
 const kEnableStreaming = Symbol("kEnableStreaming");
 // Upgrade request whose body is still being parsed: reading the raw socket also
 // resumes this request, like Node.js's UpgradeStream._read, so an unread body
@@ -1544,7 +1545,6 @@ function onSocketTimeoutTimerExpired(socket) {
 // contract (`req.socket instanceof net.Socket`); all I/O still goes through
 // the native NodeHTTP handle, not a net handle.
 const NodeHTTPServerSocket = class Socket extends NetSocket {
-  bytesRead = 0;
   connecting = false;
   timeout = 0;
   parser = null;
@@ -1552,6 +1552,7 @@ const NodeHTTPServerSocket = class Socket extends NetSocket {
   [kBoundOnAbort] = null;
   [kKeepAliveIdleStart] = undefined;
   [kBytesWritten] = 0;
+  [kBytesRead] = 0;
   [kHandle];
   [kUpgradeIncoming] = undefined;
   server: Server;
@@ -1598,6 +1599,14 @@ const NodeHTTPServerSocket = class Socket extends NetSocket {
     if (serverTimeout) {
       this.setTimeout(serverTimeout);
     }
+  }
+
+  get bytesRead() {
+    const handle = this[kHandle];
+    return handle ? (handle.response?.getBytesRead?.() ?? this[kBytesRead] ?? 0) : (this[kBytesRead] ?? 0);
+  }
+  set bytesRead(value) {
+    this[kBytesRead] = value;
   }
 
   get bytesWritten() {
@@ -1666,6 +1675,8 @@ const NodeHTTPServerSocket = class Socket extends NetSocket {
     }
   }
   #closeHandle(handle, callback, err?: Error) {
+    // Snapshot bytesRead so it survives after the handle is cleared.
+    this[kBytesRead] = handle.response?.getBytesRead?.() ?? this[kBytesRead] ?? 0;
     this[kHandle] = undefined;
     // Capture the in-flight response before detachSocket() can clear it: a
     // synchronous res.destroy() inside the request handler runs detachSocket()
@@ -1680,6 +1691,8 @@ const NodeHTTPServerSocket = class Socket extends NetSocket {
     // freeParser equivalent: runs before 'close' listeners so they observe the
     // released parser (free() invoked, kOnTimeout nulled).
     releaseServerParserShim(this);
+    // Snapshot bytesRead so it survives after the handle is cleared.
+    this[kBytesRead] = this[kHandle]?.response?.getBytesRead?.() ?? this[kBytesRead] ?? 0;
     this[kHandle] = null;
     this.server?.[kTrackedConnections]?.delete(this);
     const timer = this[kSocketTimeoutTimer];
