@@ -1890,7 +1890,11 @@ pub mod formatter {
             })();
 
             formatter.remaining_values = bun_ptr::RawSlice::EMPTY;
-            let result = if truncated {
+            // Only rewrite an Ok result: an Err means a pending JS exception
+            // (e.g. a getter threw after the cap was hit), and masking it
+            // would surface that exception in place of the assertion error
+            // instead of letting `create_error_instance` clear it.
+            let result = if truncated && result.is_ok() {
                 // The budget was hit: the walk was cut short, not failed.
                 // Clear `failed` so the formatter stays reusable and finish
                 // with a marker instead of an error.
@@ -5794,9 +5798,22 @@ pub mod formatter {
             let one = [value];
             self.remaining_values = bun_ptr::RawSlice::new(&one);
             let global = self.global_this;
+            // Honor `max_output_bytes` on this entry point too, mirroring
+            // `ZigFormatter::fmt`.
+            let mut sink = TruncatingWriter {
+                inner: &mut *writer,
+                remaining: self.max_output_bytes,
+                truncated: false,
+            };
             let result = Tag::get(value, global)
-                .and_then(|tag| self.format::<ENABLE_ANSI_COLORS>(tag, writer, value, global));
+                .and_then(|tag| self.format::<ENABLE_ANSI_COLORS>(tag, &mut sink, value, global));
+            let truncated = sink.truncated;
+            drop(sink);
             self.remaining_values = bun_ptr::RawSlice::EMPTY;
+            if truncated && result.is_ok() {
+                self.failed = false;
+                let _ = writer.write_all(b"... [value truncated]");
+            }
             result
         }
     }

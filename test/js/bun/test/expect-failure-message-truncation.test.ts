@@ -63,6 +63,23 @@ test("toThrow failure message for a huge thrown value is truncated", () => {
   expect(message).toContain("[value truncated]");
 });
 
+test("a getter throwing after the cap is hit does not replace the assertion error", () => {
+  // Element 0 exhausts the byte budget; element 1's tag classification then
+  // invokes a throwing getter. The pending exception must not surface in
+  // place of the assertion error.
+  const bad = {};
+  Object.defineProperty(bad, "$$typeof", {
+    get() {
+      throw new Error("boom");
+    },
+  });
+  const arr = [Buffer.alloc(2_000_000, "x").toString(), bad];
+  const message = messageOf(() => expect(arr).toBeNull());
+  expect(message).not.toBe("boom");
+  expect(message).toContain("expect(received)");
+  expect(message.length).toBeLessThan(2 * 1024 * 1024);
+});
+
 test("failure message for a small value is not truncated", () => {
   const message = messageOf(() => expect({ a: 1, b: [2, 3] }).toBeNull());
   expect(message).not.toContain("[value truncated]");
