@@ -3079,6 +3079,21 @@ JSC::JSObject* GlobalObject::navigatorObject()
     return this->m_navigatorObject.get(this);
 }
 
+JSC::JSObject* GlobalObject::lazyRequireCacheObject()
+{
+    if (JSObject* cache = m_lazyRequireCacheObject.get())
+        return cache;
+
+    auto& vm = this->vm();
+    auto scope = DECLARE_THROW_SCOPE(vm);
+    auto* function = JSFunction::create(vm, this, commonJSCreateRequireCacheCodeGenerator(vm), this);
+    JSValue result = JSC::profiledCall(this, ProfilingReason::API, function, JSC::getCallData(function), this, ArgList());
+    RETURN_IF_EXCEPTION(scope, nullptr);
+    JSObject* cache = asObject(result);
+    m_lazyRequireCacheObject.set(vm, this, cache);
+    return cache;
+}
+
 JSC_DEFINE_CUSTOM_GETTER(functionLazyNavigatorGetter,
     (JSC::JSGlobalObject * globalObject, JSC::EncodedJSValue thisValue,
         JSC::PropertyName))
