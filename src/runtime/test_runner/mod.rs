@@ -383,7 +383,8 @@ pub mod expect {
         // object graphs (e.g. a DOM tree) can expand to gigabytes and past
         // `WTF::String::MaxLength` the assertion error cannot be created at
         // all, losing the throw (#37310). Cap each rendered value.
-        f.max_output_bytes = 1 << 20;
+        const MAX_MATCHER_OUTPUT_BYTES: usize = 1024 * 1024;
+        f.max_output_bytes = MAX_MATCHER_OUTPUT_BYTES;
         f
     }
 
