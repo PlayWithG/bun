@@ -54,7 +54,11 @@ test("toThrow failure message for a huge thrown value is truncated", () => {
   // toThrow builds its formatter through a different helper than toBeNull;
   // both must apply the cap.
   const root = tree(4, 14);
-  const message = messageOf(() => expect(() => { throw root; }).toThrow("nope"));
+  const message = messageOf(() =>
+    expect(() => {
+      throw root;
+    }).toThrow("nope"),
+  );
   expect(message.length).toBeLessThan(4 * 1024 * 1024);
   expect(message).toContain("[value truncated]");
 });
