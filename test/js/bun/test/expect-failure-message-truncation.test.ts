@@ -14,27 +14,53 @@ function tree(depth: number, fanout: number): any {
   return node;
 }
 
-test("failure message for a huge object graph is truncated and still throws", () => {
-  const root = tree(4, 14); // ~41k nodes, renders several MB untruncated
+function messageOf(fn: () => void): string {
   let err: Error | undefined;
   try {
-    expect(root).toBeNull();
+    fn();
   } catch (e: any) {
     err = e;
   }
   expect(err).toBeDefined();
-  expect(err!.message.length).toBeLessThan(2 * 1024 * 1024);
-  expect(err!.message).toContain("[value truncated]");
+  return err!.message;
+}
+
+test("failure message for a huge object graph is truncated and still throws", () => {
+  const root = tree(4, 14); // ~41k nodes, renders several MB untruncated
+  const message = messageOf(() => expect(root).toBeNull());
+  expect(message.length).toBeLessThan(2 * 1024 * 1024);
+  expect(message).toContain("[value truncated]");
+});
+
+test("failure message for a huge string is truncated and still throws", () => {
+  // Strings render through a different path than object properties; this
+  // used to escape the whole string into the message.
+  const s = Buffer.alloc(2_000_000, "x").toString();
+  const message = messageOf(() => expect(s).toBeNull());
+  expect(message.length).toBeLessThan(2 * 1024 * 1024);
+  expect(message).toContain("[value truncated]");
+});
+
+test("failure message for a huge Map is truncated and still throws", () => {
+  const big = Buffer.alloc(1024, "v").toString();
+  const m = new Map<string, string>();
+  for (let i = 0; i < 2_000; i++) m.set("key" + i, big); // ~2MB rendered untruncated
+  const message = messageOf(() => expect(m).toBeNull());
+  expect(message.length).toBeLessThan(2 * 1024 * 1024);
+  expect(message).toContain("[value truncated]");
+});
+
+test("toThrow failure message for a huge thrown value is truncated", () => {
+  // toThrow builds its formatter through a different helper than toBeNull;
+  // both must apply the cap.
+  const root = tree(4, 14);
+  const message = messageOf(() => expect(() => { throw root; }).toThrow("nope"));
+  expect(message.length).toBeLessThan(4 * 1024 * 1024);
+  expect(message).toContain("[value truncated]");
 });
 
 test("failure message for a small value is not truncated", () => {
-  let err: Error | undefined;
-  try {
-    expect({ a: 1, b: [2, 3] }).toBeNull();
-  } catch (e: any) {
-    err = e;
-  }
-  expect(err).toBeDefined();
-  expect(err!.message).not.toContain("[value truncated]");
-  expect(err!.message).toContain("a");
+  const message = messageOf(() => expect({ a: 1, b: [2, 3] }).toBeNull());
+  expect(message).not.toContain("[value truncated]");
+  expect(message).toContain("a: 1");
 });

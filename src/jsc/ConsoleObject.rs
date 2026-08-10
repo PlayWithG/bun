@@ -1819,10 +1819,11 @@ pub mod formatter {
     }
 
     /// Byte sink that forwards to `inner` until a byte budget is exhausted,
-    /// then fails every write with `NoSpaceLeft`. The formatter treats a
-    /// failed write as fatal (`Formatter.failed`), so the walk over the value
-    /// graph stops shortly after the cap instead of rendering unbounded
-    /// output.
+    /// then silently discards further writes and reports `is_truncated()`.
+    /// It never fails because of the cap, so the formatter's infallible-write
+    /// call sites (`.expect("unreachable")`) hold; `print_as_prelude` polls
+    /// `is_truncated()` and sets `Formatter.failed`, which is what stops the
+    /// walk over the value graph shortly after the cap.
     struct TruncatingWriter<'a> {
         inner: &'a mut dyn bun_io::Write,
         remaining: usize,
@@ -1831,6 +1832,9 @@ pub mod formatter {
 
     impl bun_io::Write for TruncatingWriter<'_> {
         fn write_all(&mut self, buf: &[u8]) -> bun_io::Result<()> {
+            if self.truncated {
+                return Ok(());
+            }
             if buf.len() <= self.remaining {
                 self.remaining -= buf.len();
                 return self.inner.write_all(buf);
@@ -1847,7 +1851,12 @@ pub mod formatter {
             if take > 0 {
                 self.inner.write_all(&buf[..take])?;
             }
-            Err(bun_core::Error::NoSpaceLeft)
+            Ok(())
+        }
+
+        #[inline]
+        fn is_truncated(&self) -> bool {
+            self.truncated
         }
     }
 
@@ -3350,6 +3359,12 @@ pub mod formatter {
             remove_before_recurse: &mut bool,
         ) -> JsResult<bool> {
             if self.failed {
+                return Ok(false);
+            }
+            if writer_.is_truncated() {
+                // A byte-budgeted sink hit its cap; stop walking the value
+                // graph instead of rendering into a discarding writer.
+                self.failed = true;
                 return Ok(false);
             }
             if self.global_this.has_exception() {
