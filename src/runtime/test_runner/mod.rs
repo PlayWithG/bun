@@ -379,6 +379,11 @@ pub mod expect {
     pub(crate) fn make_formatter(global: &JSGlobalObject) -> Formatter<'_> {
         let mut f = Formatter::new(global);
         f.quote_strings = true;
+        // Matcher failure messages render the received/expected values; wide
+        // object graphs (e.g. a DOM tree) can expand to gigabytes and past
+        // `WTF::String::MaxLength` the assertion error cannot be created at
+        // all, losing the throw (#37310). Cap each rendered value.
+        f.max_output_bytes = 1 << 20;
         f
     }
 

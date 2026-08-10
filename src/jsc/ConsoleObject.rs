@@ -1660,6 +1660,12 @@ pub mod formatter {
         /// printed as a string. Set true in the error printer so that
         /// `ShellError` prints a more readable message.
         pub(crate) format_buffer_as_text: bool,
+        /// Byte budget for one `ZigFormatter` (`Display`) render of a value.
+        /// Wide object graphs (e.g. DOM trees) can otherwise expand to
+        /// gigabytes — past `WTF::String::MaxLength` the resulting error
+        /// message cannot even be materialized as a JS string. Output is cut
+        /// at the budget with a truncation marker. `usize::MAX` = unlimited.
+        pub max_output_bytes: usize,
     }
 
     impl<'a> Formatter<'a> {
@@ -1690,6 +1696,7 @@ pub mod formatter {
                 can_throw_stack_overflow: false,
                 error_display_level: ErrorDisplayLevel::Full,
                 format_buffer_as_text: false,
+                max_output_bytes: usize::MAX,
             }
         }
 
@@ -1725,6 +1732,7 @@ pub mod formatter {
                 can_throw_stack_overflow: self.can_throw_stack_overflow,
                 error_display_level: self.error_display_level,
                 format_buffer_as_text: self.format_buffer_as_text,
+                max_output_bytes: self.max_output_bytes,
             }
         }
 
@@ -1810,6 +1818,39 @@ pub mod formatter {
         }
     }
 
+    /// Byte sink that forwards to `inner` until a byte budget is exhausted,
+    /// then fails every write with `NoSpaceLeft`. The formatter treats a
+    /// failed write as fatal (`Formatter.failed`), so the walk over the value
+    /// graph stops shortly after the cap instead of rendering unbounded
+    /// output.
+    struct TruncatingWriter<'a> {
+        inner: &'a mut dyn bun_io::Write,
+        remaining: usize,
+        truncated: bool,
+    }
+
+    impl bun_io::Write for TruncatingWriter<'_> {
+        fn write_all(&mut self, buf: &[u8]) -> bun_io::Result<()> {
+            if buf.len() <= self.remaining {
+                self.remaining -= buf.len();
+                return self.inner.write_all(buf);
+            }
+            // Keep the prefix that fits, backed off to a UTF-8 boundary so
+            // the fmt bridge doesn't emit a replacement char for a split
+            // code point.
+            let mut take = self.remaining;
+            while take > 0 && buf[take] & 0b1100_0000 == 0b1000_0000 {
+                take -= 1;
+            }
+            self.remaining = 0;
+            self.truncated = true;
+            if take > 0 {
+                self.inner.write_all(&buf[..take])?;
+            }
+            Err(bun_core::Error::NoSpaceLeft)
+        }
+    }
+
     impl core::fmt::Display for ZigFormatter<'_, '_> {
         fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             // Move the unique `&mut Formatter` out of the cell for the body;
@@ -1823,17 +1864,32 @@ pub mod formatter {
             let one = [self.value];
             formatter.remaining_values = bun_ptr::RawSlice::new(&one);
 
+            let mut truncated = false;
             let result = (|| {
                 let tag =
                     Tag::get(self.value, formatter.global_this).map_err(|_| core::fmt::Error)?;
-                let mut sink = bun_io::FmtAdapter::new(f);
+                let mut fmt_sink = bun_io::FmtAdapter::new(&mut *f);
+                let mut sink = TruncatingWriter {
+                    inner: &mut fmt_sink,
+                    remaining: formatter.max_output_bytes,
+                    truncated: false,
+                };
                 let global = formatter.global_this;
-                formatter
-                    .format::<false>(tag, &mut sink, self.value, global)
-                    .map_err(|_| core::fmt::Error)
+                let r = formatter.format::<false>(tag, &mut sink, self.value, global);
+                truncated = sink.truncated;
+                r.map_err(|_| core::fmt::Error)
             })();
 
             formatter.remaining_values = bun_ptr::RawSlice::EMPTY;
+            let result = if truncated {
+                // The budget was hit: the walk was cut short, not failed.
+                // Clear `failed` so the formatter stays reusable and finish
+                // with a marker instead of an error.
+                formatter.failed = false;
+                f.write_str("... [value truncated]")
+            } else {
+                result
+            };
             self.formatter.set(Some(formatter));
             result
         }
