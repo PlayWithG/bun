@@ -76,7 +76,8 @@ test("a getter throwing after the cap is hit does not replace the assertion erro
   const arr = [Buffer.alloc(2_000_000, "x").toString(), bad];
   const message = messageOf(() => expect(arr).toBeNull());
   expect(message).not.toBe("boom");
-  expect(message).toContain("expect(received)");
+  // The signature may carry ANSI codes in CI, so match a contiguous token.
+  expect(message).toContain("toBeNull");
   expect(message.length).toBeLessThan(2 * 1024 * 1024);
 });
 
