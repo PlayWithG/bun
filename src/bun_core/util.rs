@@ -1857,6 +1857,10 @@ pub mod io {
         fn written_len(&self) -> usize {
             (**self).written_len()
         }
+        #[inline]
+        fn is_truncated(&self) -> bool {
+            (**self).is_truncated()
+        }
     }
 
     impl<W: Write + ?Sized> Write for Box<W> {
@@ -1871,6 +1875,10 @@ pub mod io {
         #[inline]
         fn written_len(&self) -> usize {
             (**self).written_len()
+        }
+        #[inline]
+        fn is_truncated(&self) -> bool {
+            (**self).is_truncated()
         }
     }
 
