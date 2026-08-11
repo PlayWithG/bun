@@ -1053,6 +1053,8 @@ pub mod bv2_impl {
                 pub(crate) import_record_index: u32,
                 pub(crate) range: bun_ast::Range,
                 pub(crate) original_target: Target,
+                /// Loader requested by the import's `with { type }` attribute, if any.
+                pub(crate) loader: Option<Loader>,
             }
 
             /// Mirrors `JSBundler.Resolve.Value.success` payload.
@@ -2255,18 +2257,12 @@ pub mod bv2_impl {
                 ) {
                     let file_map_result = _file_map_result;
                     let mut path_primary = file_map_result.path_pair.primary;
-                    let loader: Loader = 'brk: {
-                        let record: &ImportRecord = &self.graph.ast.items_import_records()
-                            [import_record.importer_source_index as usize]
-                            .as_slice()[import_record.import_record_index as usize];
-                        if let Some(out_loader) = record.loader {
-                            break 'brk out_loader;
-                        }
+                    let loader: Loader = import_record.loader.unwrap_or_else(|| {
                         // SAFETY: see `transpiler` note above.
-                        break 'brk Fs::Path::init(path_primary.text)
+                        Fs::Path::init(path_primary.text)
                             .loader(unsafe { &(*transpiler).options.loaders })
-                            .unwrap_or(Loader::File);
-                    };
+                            .unwrap_or(Loader::File)
+                    });
                     // reshaped for borrowck — `get_or_put` borrows `*self` mutably via
                     // `self.graph`; capture the slot as `*mut u32` so subsequent `self.*` calls
                     // type-check. SAFETY: `path_to_source_index_map(target)` is not mutated again
@@ -2501,19 +2497,11 @@ pub mod bv2_impl {
             path.assert_pretty_is_valid();
             path.assert_file_path_is_absolute();
 
-            let loader: Loader = 'brk: {
-                let record: &ImportRecord = &self.graph.ast.items_import_records()
-                    [import_record.importer_source_index as usize]
-                    .as_slice()[import_record.import_record_index as usize];
-                if let Some(out_loader) = record.loader {
-                    break 'brk out_loader;
-                }
+            let loader: Loader = import_record.loader.unwrap_or_else(|| {
                 // SAFETY: see `transpiler` note above.
-                break 'brk path
-                    .loader(unsafe { &(*transpiler).options.loaders })
-                    .unwrap_or(Loader::File);
-                // HTML is only allowed at the entry point.
-            };
+                path.loader(unsafe { &(*transpiler).options.loaders })
+                    .unwrap_or(Loader::File)
+            });
 
             // borrowck: get-then-put (instead of a single get-or-put) so the map
             // borrow doesn't span `enqueue_parse_task` (which needs `&mut self`).
@@ -4747,9 +4735,10 @@ pub mod bv2_impl {
                         } else {
                             path.namespace = result_ns_static;
                         }
-                        let loader = path
-                            .loader(&this.transpiler.options.loaders)
-                            .unwrap_or(Loader::File);
+                        let loader = resolve.import_record.loader.unwrap_or_else(|| {
+                            path.loader(&this.transpiler.options.loaders)
+                                .unwrap_or(Loader::File)
+                        });
 
                         // SAFETY: `GetOrPutResult` borrows `&mut this` for its whole
                         // lifetime, blocking the `free_list`/`graph` accesses below.
@@ -5661,6 +5650,7 @@ pub mod bv2_impl {
                             import_record_index,
                             range: import_record.range,
                             original_target,
+                            loader: import_record.loader,
                         },
                     );
 
@@ -5704,6 +5694,7 @@ pub mod bv2_impl {
                             import_record_index: 0,
                             range: bun_ast::Range::NONE,
                             original_target: target,
+                            loader: None,
                         },
                     );
 
