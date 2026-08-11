@@ -6838,9 +6838,7 @@ pub mod bv2_impl {
             // so borrowck sees it as disjoint from `self.graph.input_files` above.
             let path_to_source_index_map = &mut self.graph.build_graphs[ctx.target];
             for (i, record) in import_records.as_mut_slice().iter_mut().enumerate() {
-                // Only records `resolve_import_records` queued a module for carry a
-                // loader; the rest (internal, external, unresolved, plugin-resolved)
-                // get their source index elsewhere.
+                // Set by `resolve_import_records` on every record it queued a module for.
                 let Some(loader) = record.loader else {
                     continue;
                 };
