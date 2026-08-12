@@ -57,7 +57,6 @@ public:
     std::unique_ptr<IsoSubspace> m_subspaceForJSSocketHandlers;
     std::unique_ptr<IsoSubspace> m_subspaceForTTYWrapObject;
     std::unique_ptr<IsoSubspace> m_subspaceForNapiHandleScopeImpl;
-    std::unique_ptr<IsoSubspace> m_subspaceForStrongRootBlock;
     std::unique_ptr<IsoSubspace> m_subspaceForNapiTypeTag;
     std::unique_ptr<IsoSubspace> m_subspaceForNativePromiseContext;
     std::unique_ptr<IsoSubspace> m_subspaceForObjectTemplate;
