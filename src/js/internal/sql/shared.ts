@@ -1240,6 +1240,7 @@ abstract class BaseSQLAdapter<PooledConnection extends BasePooledConnection, Con
     }
 
     let timeout = options?.timeout;
+    // Presence, not truthiness: `timeout: 0` means close now, undefined/null mean drain with no timer.
     if (timeout != null) {
       timeout = Number(timeout);
       if (timeout > 2 ** 31 || timeout < 0 || timeout !== timeout) {
