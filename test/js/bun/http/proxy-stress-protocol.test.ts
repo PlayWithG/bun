@@ -343,8 +343,12 @@ describe("many proxy.headers", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// `proxy: ""` is an explicit direct connection; fetch.rs sets Some(empty)
-// for it so FetchTasklet.rs skips the ambient HTTP(S)_PROXY fallback.
+// `proxy: ""` is accepted and, with no ambient HTTP(S)_PROXY, goes direct.
+// Note: FetchTasklet.rs documents `proxy: ""` as "explicitly no proxy",
+// but the option parser (fetch.rs) treats an empty string the same as
+// absent, so ambient env proxies are NOT overridden. That discrepancy is
+// out of scope here; this test only covers the no-ambient case (env is
+// cleared by the file-level beforeAll).
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('proxy: "" with no ambient env', () => {

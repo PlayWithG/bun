@@ -1000,13 +1000,6 @@ fn fetch_impl<const ALLOW_GET_BODY: bool>(
         for obj in objects_to_try {
             if !obj.is_empty() {
                 if let Some(proxy_arg) = obj.get(global_this, "proxy")? {
-                    if proxy_arg.is_string() && proxy_arg.get_length(ctx)? == 0 {
-                        // proxy: "" is an explicit direct connection (skip the
-                        // ambient HTTP_PROXY env fallback); FetchTasklet already
-                        // maps Some(empty) → direct, this makes it reachable.
-                        proxy = Some(ZigURL::default());
-                        break 'extract_proxy url_proxy_buffer;
-                    }
                     // A URL instance has no `.url` own property, so the `{url, headers}`
                     // branch below would silently ignore it. Treat it as its href here.
                     let is_url_instance =
@@ -1416,7 +1409,7 @@ fn fetch_impl<const ALLOW_GET_BODY: bool>(
         return Ok(JSValue::ZERO);
     }
 
-    if proxy.as_ref().is_some_and(|p| !p.is_empty()) && !unix_socket_path.slice().is_empty() {
+    if proxy.is_some() && !unix_socket_path.slice().is_empty() {
         let err = ctx.to_type_error(
             jsc::ErrorCode::INVALID_ARG_VALUE,
             format_args!("{FETCH_ERROR_PROXY_UNIX}"),
@@ -1730,12 +1723,7 @@ fn fetch_impl<const ALLOW_GET_BODY: bool>(
             // An explicit `compress` request always wins over the sendfile
             // heuristic — otherwise the same `Bun.file()` body would compress
             // over https/proxy/<32 KiB/Windows but silently not over plain http.
-            // Some(empty) (`proxy: ""`) means direct, so sendfile is still
-            // eligible — only a real proxy URL needs the tunnel envelope.
-            if proxy.as_ref().is_none_or(ZigURL::is_empty)
-                && compress.is_none()
-                && http::SendFile::is_eligible(&url)
-            {
+            if proxy.is_none() && compress.is_none() && http::SendFile::is_eligible(&url) {
                 'use_sendfile: {
                     let stat: bun_sys::Stat = match bun_sys::fstat(opened_fd) {
                         Ok(result) => result,
