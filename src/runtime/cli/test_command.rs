@@ -1512,15 +1512,7 @@ impl CommandLineReporter {
                 this.summary().fail += 1;
 
                 if this.summary().fail == this.jest.bail {
-                    this.print_summary();
-                    pretty_error!(
-                        "\nBailed out after {} failure{}<r>\n",
-                        this.jest.bail,
-                        if this.jest.bail == 1 { "" } else { "s" }
-                    );
-                    Output::flush();
-                    this.write_junit_report_if_needed();
-                    this.write_timings_if_needed();
+                    this.bail_out(VirtualMachine::get());
                     Global::exit(1);
                 }
             }
@@ -1571,13 +1563,59 @@ impl CommandLineReporter {
         }
     }
 
+    /// Everything the normal end of a run reports that must also survive a
+    /// `--bail` exit: coverage for what did execute, the summary line, the
+    /// JUnit report and timings. The caller exits the process afterwards.
+    pub(crate) fn bail_out(&mut self, vm: &VirtualMachine) {
+        Output::flush();
+        let mut coverage_options: CodeCoverageOptions = self.jest.test_options.coverage.clone();
+        if let Err(err) = self.write_code_coverage_if_needed(vm, &mut coverage_options) {
+            Output::err(err, "Failed to write code coverage report", ());
+        }
+        self.print_summary();
+        pretty_error!(
+            "\nBailed out after {} failure{}<r>\n",
+            self.jest.bail,
+            if self.jest.bail == 1 { "" } else { "s" }
+        );
+        Output::flush();
+        self.write_junit_report_if_needed();
+        self.write_timings_if_needed();
+    }
+
+    /// Sets `opts.fractions.failing` when a coverage threshold was missed.
+    pub(crate) fn write_code_coverage_if_needed(
+        &mut self,
+        vm: &VirtualMachine,
+        opts: &mut CodeCoverageOptions,
+    ) -> crate::Result<()> {
+        if !opts.enabled {
+            return Ok(());
+        }
+        // Generic param order is <TEXT, LCOV, COLORS>; the match tuple is (colors, text, lcov).
+        match (
+            Output::enable_ansi_colors_stderr(),
+            opts.reporters.text,
+            opts.reporters.lcov,
+        ) {
+            (true, true, true) => self.generate_code_coverage::<true, true, true>(vm, opts),
+            (true, true, false) => self.generate_code_coverage::<true, false, true>(vm, opts),
+            (true, false, true) => self.generate_code_coverage::<false, true, true>(vm, opts),
+            (true, false, false) => self.generate_code_coverage::<false, false, true>(vm, opts),
+            (false, true, true) => self.generate_code_coverage::<true, true, false>(vm, opts),
+            (false, true, false) => self.generate_code_coverage::<true, false, false>(vm, opts),
+            (false, false, true) => self.generate_code_coverage::<false, true, false>(vm, opts),
+            (false, false, false) => self.generate_code_coverage::<false, false, false>(vm, opts),
+        }
+    }
+
     pub(crate) fn generate_code_coverage<
         const REPORTERS_TEXT: bool,
         const REPORTERS_LCOV: bool,
         const ENABLE_ANSI_COLORS: bool,
     >(
         &mut self,
-        vm: &mut VirtualMachine,
+        vm: &VirtualMachine,
         opts: &mut CodeCoverageOptions,
     ) -> crate::Result<()> {
         if !REPORTERS_TEXT && !REPORTERS_LCOV {
@@ -1668,7 +1706,7 @@ impl CommandLineReporter {
         const ENABLE_ANSI_COLORS: bool,
     >(
         &mut self,
-        vm: &mut VirtualMachine,
+        vm: &VirtualMachine,
         opts: &mut CodeCoverageOptions,
         byte_ranges: &mut [&mut ByteRangeMapping],
     ) -> crate::Result<()> {
@@ -2835,31 +2873,9 @@ impl TestCommand {
         } else {
             pretty_error!("\n");
 
-            if coverage_options.enabled && !ran_parallel {
-                // 8-way dispatch over 3 runtime bools.
-                match (
-                    Output::enable_ansi_colors_stderr(),
-                    coverage_options.reporters.text,
-                    coverage_options.reporters.lcov,
-                ) {
-                    (true, true, true) => reporter
-                        .generate_code_coverage::<true, true, true>(vm, &mut coverage_options)?,
-                    (true, true, false) => reporter
-                        .generate_code_coverage::<true, false, true>(vm, &mut coverage_options)?,
-                    (true, false, true) => reporter
-                        .generate_code_coverage::<false, true, true>(vm, &mut coverage_options)?,
-                    (true, false, false) => reporter
-                        .generate_code_coverage::<false, false, true>(vm, &mut coverage_options)?,
-                    (false, true, true) => reporter
-                        .generate_code_coverage::<true, true, false>(vm, &mut coverage_options)?,
-                    (false, true, false) => reporter
-                        .generate_code_coverage::<true, false, false>(vm, &mut coverage_options)?,
-                    (false, false, true) => reporter
-                        .generate_code_coverage::<false, true, false>(vm, &mut coverage_options)?,
-                    (false, false, false) => reporter
-                        .generate_code_coverage::<false, false, false>(vm, &mut coverage_options)?,
-                }
-                // Generic param order is <TEXT, LCOV, COLORS>; the match tuple is (colors, text, lcov).
+            // `--parallel` already merged the workers' coverage in the coordinator.
+            if !ran_parallel {
+                reporter.write_code_coverage_if_needed(vm, &mut coverage_options)?;
             }
 
             // `Summary` is `Copy`; take a value snapshot so the `&mut` from
@@ -3290,14 +3306,7 @@ impl TestCommand {
                     reporter.summary().fail += 1;
 
                     if reporter.jest.bail == reporter.summary().fail {
-                        reporter.print_summary();
-                        pretty_error!(
-                            "\nBailed out after {} failure{}<r>\n",
-                            reporter.jest.bail,
-                            if reporter.jest.bail == 1 { "" } else { "s" }
-                        );
-                        reporter.write_junit_report_if_needed();
-                        reporter.write_timings_if_needed();
+                        reporter.bail_out(vm);
 
                         vm.exit_handler.exit_code = 1;
                         vm.is_shutting_down = true;
