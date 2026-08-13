@@ -172,7 +172,7 @@ describe("mock.module with an async factory when the module is already loaded", 
       name,
       async () => {
         using dir = tempDir("mock-module-async-factory", {
-          "dep.ts": `export const getValue = () => "real";\n`,
+          "dep.ts": `export const getValue = () => "real";\nexport const other = () => "real-other";\n`,
           "dep.mock.ts": `export const getValue = () => "mocked";\n`,
           ...files,
         });
@@ -236,6 +236,49 @@ describe("mock.module with an async factory when the module is already loaded", 
     `,
   });
 
+  check("the returned promise is what signals that the override has been applied", {
+    "fixture.test.ts": `
+      import { expect, test, mock } from "bun:test";
+      import { getValue } from "./dep";
+      const pending = mock.module("./dep", () => import("./dep.mock"));
+      const seenBeforeSettling = getValue();
+      test("t", async () => {
+        expect(pending).toBeInstanceOf(Promise);
+        expect(seenBeforeSettling).toBe("real");
+        await expect(pending).resolves.toBeUndefined();
+        expect(getValue()).toBe("mocked");
+      });
+    `,
+  });
+
+  check("a dep loaded with require() is overridden once the factory settles", {
+    "dep.cjs": `module.exports = { getValue: () => "real" };\n`,
+    "fixture.test.ts": `
+      import { expect, test, mock } from "bun:test";
+      const before = require("./dep.cjs");
+      test("t", async () => {
+        expect(before.getValue()).toBe("real");
+        await mock.module("./dep.cjs", async () => {
+          await new Promise(resolve => setImmediate(resolve));
+          return { getValue: () => "mocked" };
+        });
+        expect(require("./dep.cjs").getValue()).toBe("mocked");
+      });
+    `,
+  });
+
+  check("factory that imports the module it is mocking gets the real module and leaves untouched exports alone", {
+    "fixture.test.ts": `
+      import { expect, test, mock } from "bun:test";
+      import { getValue, other } from "./dep";
+      await mock.module("./dep", async () => ({ ...(await import("./dep")), getValue: () => "mocked" }));
+      test("t", () => {
+        expect(getValue()).toBe("mocked");
+        expect(other()).toBe("real-other");
+      });
+    `,
+  });
+
   check("factory rejecting propagates the rejection to the returned promise", {
     "fixture.test.ts": `
       import { expect, test, mock } from "bun:test";
@@ -247,6 +290,36 @@ describe("mock.module with an async factory when the module is already loaded", 
         });
         await expect(p).rejects.toThrow("factory-boom");
         expect(getValue()).toBe("real");
+      });
+    `,
+  });
+
+  check("factory returning an already-rejected promise rejects the returned promise instead of throwing", {
+    "fixture.test.ts": `
+      import { expect, test, mock } from "bun:test";
+      import { getValue } from "./dep";
+      test("t", async () => {
+        const p = mock.module("./dep", async () => {
+          throw new Error("factory-boom");
+        });
+        await expect(p).rejects.toThrow("factory-boom");
+        expect(getValue()).toBe("real");
+      });
+    `,
+  });
+
+  check("an entry that failed before linking is dropped even though the factory has not settled", {
+    "dep-unlinkable.ts": `
+      import { doesNotExist } from "./dep";
+      export const getValue = () => doesNotExist;
+    `,
+    "fixture.test.ts": `
+      import { expect, test, mock } from "bun:test";
+      test("t", async () => {
+        await expect(import("./dep-unlinkable")).rejects.toBeDefined();
+        expect(mock.module("./dep-unlinkable", () => import("./dep.mock"))).toBeUndefined();
+        const m = await import("./dep-unlinkable");
+        expect(m.getValue()).toBe("mocked");
       });
     `,
   });
