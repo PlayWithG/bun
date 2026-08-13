@@ -2,15 +2,14 @@ import { expect, test } from "bun:test";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 
-test("req.socket.bytesRead is non-zero after request body received (#28709)", async () => {
-  const { promise, resolve, reject } = Promise.withResolvers<number>();
+test("req.socket.bytesRead counts headers and body (#28709)", async () => {
+  const { promise, resolve, reject } = Promise.withResolvers<{ atDispatch: number; atEnd: number }>();
   const server = http.createServer((req, res) => {
+    // The 'request' event fires after headers are parsed but before any body
+    // chunk is delivered, so this samples the header-seeded value alone.
+    const atDispatch = req.socket.bytesRead;
     req.on("end", () => {
-      try {
-        resolve(req.socket.bytesRead);
-      } catch (e) {
-        reject(e);
-      }
+      resolve({ atDispatch, atEnd: req.socket.bytesRead });
       res.end("ok");
     });
     req.on("error", reject);
@@ -23,8 +22,11 @@ test("req.socket.bytesRead is non-zero after request body received (#28709)", as
     clientReq.on("error", reject);
     clientReq.write("hello");
     clientReq.end();
-    const bytesRead = await promise;
-    expect(bytesRead).toBeGreaterThan(0);
+    const { atDispatch, atEnd } = await promise;
+    // Header portion was seeded at request dispatch.
+    expect(atDispatch).toBeGreaterThan(0);
+    // Body bytes were accumulated on top of the header seed.
+    expect(atEnd - atDispatch).toBe("hello".length);
   } finally {
     server.close();
   }

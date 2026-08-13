@@ -1602,8 +1602,10 @@ const NodeHTTPServerSocket = class Socket extends NetSocket {
   }
 
   get bytesRead() {
-    const handle = this[kHandle];
-    return handle ? (handle.response?.getBytesRead?.() ?? this[kBytesRead] ?? 0) : (this[kBytesRead] ?? 0);
+    // kBytesRead holds bytes counted outside the current response (tunnel-mode
+    // chunks from #onData, plus close-time snapshots); the response counter
+    // holds the current request's headers + body. The two never overlap.
+    return (this[kHandle]?.response?.getBytesRead?.() ?? 0) + (this[kBytesRead] ?? 0);
   }
   set bytesRead(value) {
     this[kBytesRead] = value;
@@ -1651,6 +1653,9 @@ const NodeHTTPServerSocket = class Socket extends NetSocket {
   #onData(chunk, last) {
     this._unrefTimer();
     if (chunk) {
+      // Tunnel-mode (CONNECT/Upgrade) bytes bypass the response's counter,
+      // so accumulate them on the socket directly.
+      this[kBytesRead] = (this[kBytesRead] ?? 0) + chunk.length;
       this.push(chunk);
     }
     if (last) {
@@ -1675,8 +1680,9 @@ const NodeHTTPServerSocket = class Socket extends NetSocket {
     }
   }
   #closeHandle(handle, callback, err?: Error) {
-    // Snapshot bytesRead so it survives after the handle is cleared.
-    this[kBytesRead] = handle.response?.getBytesRead?.() ?? this[kBytesRead] ?? 0;
+    // Fold the response's count into kBytesRead so it survives after the
+    // handle is cleared. #onClose sees kHandle undefined and adds nothing.
+    this[kBytesRead] = (this[kBytesRead] ?? 0) + (handle.response?.getBytesRead?.() ?? 0);
     this[kHandle] = undefined;
     // Capture the in-flight response before detachSocket() can clear it: a
     // synchronous res.destroy() inside the request handler runs detachSocket()
@@ -1691,8 +1697,9 @@ const NodeHTTPServerSocket = class Socket extends NetSocket {
     // freeParser equivalent: runs before 'close' listeners so they observe the
     // released parser (free() invoked, kOnTimeout nulled).
     releaseServerParserShim(this);
-    // Snapshot bytesRead so it survives after the handle is cleared.
-    this[kBytesRead] = this[kHandle]?.response?.getBytesRead?.() ?? this[kBytesRead] ?? 0;
+    // Fold the response's count into kBytesRead so it survives after the
+    // handle is cleared.
+    this[kBytesRead] = (this[kBytesRead] ?? 0) + (this[kHandle]?.response?.getBytesRead?.() ?? 0);
     this[kHandle] = null;
     this.server?.[kTrackedConnections]?.delete(this);
     const timer = this[kSocketTimeoutTimer];
