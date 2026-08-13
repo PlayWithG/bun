@@ -1725,9 +1725,8 @@ impl<'a> Parser<'a> {
             exports_kind = js_ast::ExportsKind::EsmWithDynamicFallbackFromCjs;
         }
 
-        // `import.meta` spelled in a way the textual cache check misses: the
-        // features hash then lacks the `runtime_hot` bit, so do not persist
-        // output that depends on it.
+        // The cache key omits `runtime_hot` when the textual check misses
+        // `import.meta`; do not persist output that depends on it.
         if p.options.features.runtime_hot
             && p.has_import_meta
             && !bun_ast::RuntimeTranspilerCache::mentions_import_meta(&p.source.contents)

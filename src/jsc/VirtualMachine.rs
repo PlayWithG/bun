@@ -302,9 +302,8 @@ pub struct VirtualMachine {
     pub pending_internal_promise_is_protected: bool,
     pub pending_internal_promise_reported_at: u32,
     pub(crate) hot_reload_deferred: bool,
-    /// Set while a reload is waiting on promises returned from
-    /// `import.meta.hot.dispose()` callbacks; see [`Self::reload`].
-    pub hot_reload_dispose_promise: crate::strong::Optional,
+    /// Promise a reload is waiting on; see [`Self::reload`].
+    pub(crate) hot_reload_dispose_promise: crate::strong::Optional,
     pub entry_point_result: EntryPointResult,
 
     pub on_unhandled_rejection: OnUnhandledRejection,
@@ -1117,9 +1116,8 @@ impl VirtualMachine {
         self.worker.is_none()
     }
 
-    /// Whether this VM soft-reloads on file changes (`bun --hot`), i.e. whether
-    /// `import.meta.hot` exists. Workers inherit `hot_reload` from the parent
-    /// but are never reloaded, so it is only true on the main VM.
+    /// Whether `import.meta.hot` exists: `bun --hot`, main VM only (workers
+    /// inherit `hot_reload` but are never reloaded).
     pub fn is_hot_reload_enabled(&self) -> bool {
         self.hot_reload == HOT_RELOAD_HOT && self.is_main_thread()
     }
@@ -3817,9 +3815,8 @@ impl VirtualMachine {
         self.hot_reload_deferred = false;
 
         if let Some(dispose) = self.hot_reload_dispose_promise.get() {
-            // A previous call already ran the dispose callbacks and is waiting
-            // for the promises they returned. Changes that arrive meanwhile
-            // coalesce into the reload that runs once they settle.
+            // Dispose callbacks already ran; wait for their promises. Further
+            // changes coalesce into this reload.
             let promise = dispose
                 .as_promise()
                 .expect("hot_reload_dispose_promise only ever holds a promise");
@@ -3841,11 +3838,9 @@ impl VirtualMachine {
                 bun_core::Output::enable_buffering();
             }
 
-            // Runs `import.meta.hot.dispose()` callbacks. If any returned a
-            // still-pending promise this yields a promise that settles when
-            // they all have; the event loop's deferred-reload poll
-            // (`report_exception_in_hot_reloaded_module_if_needed`) calls back
-            // into `reload` and the branch above resumes from here.
+            // If dispose callbacks returned pending promises, park until the
+            // deferred-reload poll (`report_exception_in_hot_reloaded_module_if_needed`)
+            // re-enters `reload` and the branch above resumes.
             let global = self.global();
             let dispose = crate::cpp::JSC__JSGlobalObject__runImportMetaHotDispose(global);
             if let Some(promise) = dispose.as_promise() {

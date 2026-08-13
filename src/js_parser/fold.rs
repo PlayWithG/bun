@@ -504,9 +504,8 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                                 loc,
                             });
                         }
-                        // Under `bun --hot`, leave this as a runtime property
-                        // access; everywhere else (bun run/build/Transpiler)
-                        // fold to `undefined` so `.dispose(..)` etc. DCE away.
+                        // Only the `--hot` runtime provides the property; fold it
+                        // away everywhere else so calls on it DCE.
                         if !p.options.features.runtime_hot {
                             return Some(Expr {
                                 data: js_ast::ExprData::ESpecial(E::Special::HotDisabled),

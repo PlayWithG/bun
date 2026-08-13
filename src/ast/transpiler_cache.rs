@@ -32,11 +32,8 @@ pub struct RuntimeTranspilerCache {
 }
 
 impl RuntimeTranspilerCache {
-    /// Cheap pre-parse guess at whether `Features::runtime_hot` can affect a
-    /// file's output (the parser only rewrites `import.meta.hot`). `get()`
-    /// hashes the flag only when this is true; the parser refuses to `put()`
-    /// a file where the guess was wrong, so a `--hot` transpile can never be
-    /// served to a plain run.
+    /// Pre-parse check for whether `Features::runtime_hot` can affect a file's
+    /// output; the parser skips `put()` for the files this misses.
     pub fn mentions_import_meta(contents: &[u8]) -> bool {
         bun_core::strings::contains(contents, b"import.meta")
     }

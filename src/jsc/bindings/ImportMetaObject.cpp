@@ -522,14 +522,9 @@ JSC_DEFINE_CUSTOM_GETTER(jsImportMetaObjectGetter_env, (JSGlobalObject * jsGloba
     return JSValue::encode(globalObject->m_processEnvObject.getInitializedOnMainThread(globalObject));
 }
 
-// ─── import.meta.hot (bun --hot) ────────────────────────────────────────────
-//
-// Each module gets one plain object whose prototype is ImportMetaHotPrototype.
-// The module URL is stashed on it under a private name; `data` is an accessor
-// over GlobalObject::importMetaHotDataMap() (URL -> object), which is what
-// survives a reload. dispose() callbacks are queued on the global as
-// (callback, URL) tuples and drained by JSC__JSGlobalObject__runImportMetaHotDispose
-// before VirtualMachine::reload() tears the module registry down.
+// import.meta.hot (bun --hot): a per-module object holding only its URL under a
+// private name. `data` lives in GlobalObject::importMetaHotDataMap() keyed by URL;
+// dispose() queues (callback, URL) tuples on the global, drained on reload.
 
 extern "C" void Bun__logUnhandledException(JSC::EncodedJSValue exception);
 
@@ -542,8 +537,7 @@ static JSString* importMetaHotThisURL(JSC::VM& vm, JSValue thisValue)
     return url ? dynamicDowncast<JSString>(url) : nullptr;
 }
 
-// Returns the module's `data` object, creating it on first use so that both
-// the getter and dispose callbacks always see an object.
+// Creates the module's `data` object on first use.
 static JSValue importMetaHotDataForURL(Zig::GlobalObject* globalObject, JSString* url)
 {
     auto& vm = globalObject->vm();
@@ -601,9 +595,8 @@ JSC_DEFINE_HOST_FUNCTION(functionImportMetaHotDispose, (JSC::JSGlobalObject * js
     return JSValue::encode(jsUndefined());
 }
 
-// `bun --hot` re-evaluates every module on each change, so the Vite accept
-// graph and HMR events have nothing to do; these exist so code written for
-// Vite or the bundler dev server can call them under --hot without throwing.
+// --hot re-evaluates every module, so the Vite accept/event API has nothing to
+// do; the methods exist so code written against it does not throw.
 JSC_DEFINE_HOST_FUNCTION(functionImportMetaHotNoop, (JSC::JSGlobalObject * jsGlobalObject, JSC::CallFrame* callFrame))
 {
     auto& vm = jsGlobalObject->vm();
@@ -740,9 +733,8 @@ public:
             reifyStaticProperties(vm, ImportMetaObject::info(), ImportMetaObjectBakePrototypeValues, *this);
         } else {
             reifyStaticProperties(vm, ImportMetaObject::info(), ImportMetaObjectPrototypeValues, *this);
-            // Only `bun --hot` has anything to put behind import.meta.hot; in every
-            // other mode the property does not exist, matching what the transpiler
-            // folds `import.meta.hot` to.
+            // Outside --hot the property does not exist at all, matching what the
+            // transpiler folds `import.meta.hot` to.
             if (Bun__VirtualMachine__isHotReloadEnabled(defaultGlobalObject(globalObject)->bunVM())) {
                 this->putDirectCustomAccessor(vm, Identifier::fromString(vm, "hot"_s),
                     JSC::CustomGetterSetter::create(vm, jsImportMetaObjectGetter_hot, nullptr),
@@ -925,9 +917,8 @@ JSC::JSMap* Zig::GlobalObject::importMetaHotDataMap()
     return map;
 }
 
-// Reaction context shared by every promise a dispose callback returned:
-// slot 0 is the promise handed back to VirtualMachine::reload(), slot 1 the
-// number of dispose promises still pending.
+// Shared reaction context: slot 0 = promise returned to VirtualMachine::reload(),
+// slot 1 = number of dispose promises still pending.
 static void importMetaHotDisposePromiseSettled(JSC::VM& vm, JSValue contextValue)
 {
     auto* context = dynamicDowncast<JSC::InternalFieldTuple>(contextValue);
@@ -952,10 +943,9 @@ JSC_DEFINE_HOST_FUNCTION(functionImportMetaHotDisposeRejected, (JSC::JSGlobalObj
     return JSValue::encode(jsUndefined());
 }
 
-// Runs every queued dispose callback once. Returns undefined when the reload
-// can proceed immediately, or a promise that fulfills once every promise the
-// callbacks returned has settled. Callback errors are printed like any other
-// error in a hot-reloaded module; they never abort the reload or the process.
+// Runs the queued dispose callbacks. Returns undefined, or a promise that
+// fulfills once every promise they returned has settled. Callback errors are
+// printed (never fatal) and never block the reload.
 extern "C" [[ZIG_EXPORT(nothrow)]] JSC::EncodedJSValue JSC__JSGlobalObject__runImportMetaHotDispose(JSC::JSGlobalObject* jsGlobalObject)
 {
     auto* globalObject = static_cast<Zig::GlobalObject*>(jsGlobalObject);
@@ -965,8 +955,7 @@ extern "C" [[ZIG_EXPORT(nothrow)]] JSC::EncodedJSValue JSC__JSGlobalObject__runI
     auto& vm = globalObject->vm();
     auto scope = DECLARE_TOP_EXCEPTION_SCOPE(vm);
 
-    // Drain first: callbacks registering new dispose handlers while we run
-    // belong to the generation that is about to be evaluated.
+    // Drain first: dispose() calls made while running belong to the next generation.
     JSC::MarkedArgumentBuffer entries;
     globalObject->m_importMetaHotDisposeCallbacks.drainTo(globalObject, entries);
     RELEASE_ASSERT(!entries.hasOverflowed());

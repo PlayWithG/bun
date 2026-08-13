@@ -400,9 +400,8 @@ pub struct TranspilerJob {
     pub(crate) non_threadsafe_input_specifier: OwnedString,
     pub(crate) non_threadsafe_referrer: OwnedString,
     pub(crate) loader: Loader,
-    /// `VirtualMachine::is_hot_reload_enabled()`, sampled on the JS thread so
-    /// the worker-thread `run()` does not have to touch the VM for it.
-    pub runtime_hot: bool,
+    /// `VirtualMachine::is_hot_reload_enabled()`, sampled on the JS thread.
+    pub(crate) runtime_hot: bool,
     pub(crate) promise: StrongOptional,
     // Note: struct is stored in a HiveArray and crosses to a worker thread;
     // raw pointers/BackRefs are used (BACKREF — VM owns the
