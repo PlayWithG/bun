@@ -961,10 +961,12 @@ impl RuntimeTranspilerCache {
         self.input_byte_length = Some(source.contents.len() as u64);
 
         let mut features_hasher = Wyhash::init(SEED);
+        let uses_runtime_hot = parser_options.features.runtime_hot
+            && bun_ast::RuntimeTranspilerCache::mentions_import_meta(&source.contents);
         parser_options.hash_for_runtime_transpiler(
             &mut features_hasher,
             used_jsx,
-            bun_ast::RuntimeTranspilerCache::mentions_import_meta(&source.contents),
+            uses_runtime_hot,
         );
         self.features_hash = Some(features_hasher.final_());
 

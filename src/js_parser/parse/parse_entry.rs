@@ -226,11 +226,11 @@ impl<'a> Options<'a> {
         &self,
         hasher: &mut Wyhash,
         did_use_jsx: bool,
-        mentions_import_meta: bool,
+        uses_runtime_hot: bool,
     ) {
         debug_assert!(!self.bundle);
 
-        if mentions_import_meta && self.features.runtime_hot {
+        if uses_runtime_hot {
             hasher.update(b"HOT");
         }
 
