@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import http from "node:http";
-import net from "node:net";
 import type { AddressInfo } from "node:net";
+import net from "node:net";
 
 test("req.socket.bytesRead counts headers and body (#28709)", async () => {
   const { promise, resolve, reject } = Promise.withResolvers<{
