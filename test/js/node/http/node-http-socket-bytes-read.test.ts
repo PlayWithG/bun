@@ -16,7 +16,10 @@ test("req.socket.bytesRead counts headers and body (#28709)", async () => {
     req.resume();
   });
   try {
-    await new Promise<void>(r => server.listen(0, r));
+    await new Promise<void>((res, rej) => {
+      server.once("error", rej);
+      server.listen(0, res);
+    });
     const port = (server.address() as AddressInfo).port;
     const clientReq = http.request({ method: "PUT", port });
     clientReq.on("error", reject);
@@ -28,6 +31,6 @@ test("req.socket.bytesRead counts headers and body (#28709)", async () => {
     // Body bytes were accumulated on top of the header seed.
     expect(atEnd - atDispatch).toBe("hello".length);
   } finally {
-    server.close();
+    await new Promise<void>((res, rej) => server.close(err => (err ? rej(err) : res())));
   }
 });

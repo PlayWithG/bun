@@ -1602,9 +1602,7 @@ const NodeHTTPServerSocket = class Socket extends NetSocket {
   }
 
   get bytesRead() {
-    // kBytesRead holds bytes counted outside the current response (tunnel-mode
-    // chunks from #onData, plus close-time snapshots); the response counter
-    // holds the current request's headers + body. The two never overlap.
+    // kBytesRead only ever holds tunnel chunks and close-time folds, so the sum never double-counts.
     return (this[kHandle]?.response?.getBytesRead?.() ?? 0) + (this[kBytesRead] ?? 0);
   }
   set bytesRead(value) {
@@ -1653,8 +1651,7 @@ const NodeHTTPServerSocket = class Socket extends NetSocket {
   #onData(chunk, last) {
     this._unrefTimer();
     if (chunk) {
-      // Tunnel-mode (CONNECT/Upgrade) bytes bypass the response's counter,
-      // so accumulate them on the socket directly.
+      // Tunnel-mode (CONNECT/Upgrade) chunks bypass the response counter; count them here.
       this[kBytesRead] = (this[kBytesRead] ?? 0) + chunk.length;
       this.push(chunk);
     }
@@ -1680,8 +1677,7 @@ const NodeHTTPServerSocket = class Socket extends NetSocket {
     }
   }
   #closeHandle(handle, callback, err?: Error) {
-    // Fold the response's count into kBytesRead so it survives after the
-    // handle is cleared. #onClose sees kHandle undefined and adds nothing.
+    // Fold the response count into kBytesRead; #onClose then sees kHandle undefined and adds nothing.
     this[kBytesRead] = (this[kBytesRead] ?? 0) + (handle.response?.getBytesRead?.() ?? 0);
     this[kHandle] = undefined;
     // Capture the in-flight response before detachSocket() can clear it: a
@@ -1697,8 +1693,7 @@ const NodeHTTPServerSocket = class Socket extends NetSocket {
     // freeParser equivalent: runs before 'close' listeners so they observe the
     // released parser (free() invoked, kOnTimeout nulled).
     releaseServerParserShim(this);
-    // Fold the response's count into kBytesRead so it survives after the
-    // handle is cleared.
+    // Fold the response count into kBytesRead so it survives the handle being cleared.
     this[kBytesRead] = (this[kBytesRead] ?? 0) + (this[kHandle]?.response?.getBytesRead?.() ?? 0);
     this[kHandle] = null;
     this.server?.[kTrackedConnections]?.delete(this);
