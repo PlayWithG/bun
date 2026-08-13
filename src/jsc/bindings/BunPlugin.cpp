@@ -673,9 +673,6 @@ extern "C" JSC_DEFINE_HOST_FUNCTION(JSMock__jsModuleMock, (JSC::JSGlobalObject *
     auto specifierIdent = JSC::Identifier::fromString(vm, specifierString->value(globalObject));
     RETURN_IF_EXCEPTION(scope, {});
 
-    // Entries that exist but cannot be patched in place (a load that failed before
-    // linking) are dropped before the factory runs, so the next import goes through
-    // the mock even if the factory is async and never settles.
     JSC::JSModuleNamespaceObject* moduleNamespaceObject = nullptr;
     bool removeFromESM = false;
     if (auto* entry = globalObject->moduleLoader()->registryEntry(specifierIdent)) {
@@ -698,6 +695,7 @@ extern "C" JSC_DEFINE_HOST_FUNCTION(JSMock__jsModuleMock, (JSC::JSGlobalObject *
     auto* commonJSModule = dynamicDowncast<Bun::JSCommonJSModule>(requireMapEntry);
     bool removeFromCJS = !commonJSModule && !requireMapEntry.isUndefined();
 
+    // Removed before the factory runs: an async factory may never settle.
     if (removeFromESM) {
         auto* moduleLoader = globalObject->moduleLoader();
         WTF::Locker locker { moduleLoader->cellLock() };
@@ -719,8 +717,7 @@ extern "C" JSC_DEFINE_HOST_FUNCTION(JSMock__jsModuleMock, (JSC::JSGlobalObject *
 
     if (auto* promise = dynamicDowncast<JSC::JSPromise>(result)) {
         if (promise->status() != JSC::JSPromise::Status::Fulfilled) {
-            // Pending or already rejected. Routing a rejected promise through the same
-            // reaction marks it handled, so the failure surfaces once, via resultPromise.
+            // Rejected takes this path too: attaching the reaction marks the promise handled.
             if (moduleNamespaceObject)
                 mock->pendingNamespace.set(vm, mock, moduleNamespaceObject);
             if (commonJSModule)
