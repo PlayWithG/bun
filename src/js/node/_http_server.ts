@@ -816,6 +816,8 @@ Server.prototype[kRealListen] = function (tls, port, host, socketPath, reusePort
             const { promise, resolve } = $newPromiseCapability(Promise);
             // Pass the pipelined data (head buffer) if any was received with the CONNECT request
             const head = connectHead ? connectHead : kEmptyBuffer;
+            // Head bytes arrive in the initial parse burst, before #onData is wired.
+            socket[kBytesRead] = (socket[kBytesRead] ?? 0) + head.length;
             // Node.js's parserOnIncoming: req.upgrade is true for CONNECT
             // regardless of shouldUpgradeCallback.
             http_req.upgrade = true;
@@ -1046,6 +1048,8 @@ Server.prototype[kRealListen] = function (tls, port, host, socketPath, reusePort
             http_req.once("end", clearUpgradeIncoming.bind(undefined, socket));
           }
           const upgradeHead = !hasBody && connectHead ? connectHead : kEmptyBuffer;
+          // Head bytes arrive in the initial parse burst, before #onData is wired.
+          socket[kBytesRead] = (socket[kBytesRead] ?? 0) + upgradeHead.length;
           let upgradeHandled;
           try {
             upgradeHandled = server.emit("upgrade", http_req, socket, upgradeHead);
