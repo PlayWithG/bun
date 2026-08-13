@@ -35,25 +35,24 @@ function notImplemented() {
   throw new Error("This function is not yet implemented in Bun");
 }
 
-// Dispatchers in Bun's undici shim translate to the native fetch `proxy` option.
-// A dispatcher that can express itself as a proxy exposes this method; it
-// receives the target URL and returns the value to pass as `proxy` (string,
-// URL, `{url, headers}` object, "" for direct) or `undefined` to defer. Native
-// fetch still applies ambient NO_PROXY to a non-empty proxy value (see
-// ProxySettings::from_explicit), so ProxyAgent inherits that behaviour.
+// The only dispatcher behaviour this shim implements is proxying: a dispatcher
+// that carries a proxy (ProxyAgent, or RetryAgent wrapping one) returns the
+// value for native fetch's `proxy` option from this method; every other
+// dispatcher returns undefined and the request goes to native fetch unchanged,
+// which applies HTTP_PROXY/HTTPS_PROXY/NO_PROXY itself (including on redirects).
+// Custom dispatch() implementations are not invoked.
 const kProxyFor = Symbol("kProxyFor");
 
-function resolveProxy(dispatcher, url) {
+function resolveProxy(dispatcher) {
   if (dispatcher == null) dispatcher = getGlobalDispatcher();
   if (dispatcher != null && typeof dispatcher[kProxyFor] === "function") {
-    return dispatcher[kProxyFor](url);
+    return dispatcher[kProxyFor]();
   }
   return undefined;
 }
 
-function applyDispatcher(url, options) {
-  const dispatcher = options?.dispatcher;
-  const proxy = resolveProxy(dispatcher, url);
+function applyDispatcher(options) {
+  const proxy = resolveProxy(options?.dispatcher);
   if (proxy === undefined) return options;
   if (options == null) return { proxy };
   // Bun's fetch(url, Request) reads method/headers/body via prototype getters;
@@ -66,21 +65,35 @@ function applyDispatcher(url, options) {
 
 function fetch(input, init) {
   try {
-    // `input` may be a Request or Bun's `{url, ...}` init object; dispatchers
-    // that inspect the target URL need the string href, so normalize it first.
-    const url =
-      input instanceof Request || (input != null && typeof input === "object" && typeof input.url === "string")
-        ? input.url
-        : input;
-    return nativeFetch(input, applyDispatcher(url, init));
+    return nativeFetch(input, applyDispatcher(init));
   } catch (e) {
-    // WHATWG fetch never throws synchronously from option conversion; match
-    // Bun.fetch and upstream undici by converting any wrapper-side throw
-    // (throwing getters, Proxy traps) into a rejection.
+    // fetch() rejects rather than throwing on option conversion; keep that
+    // contract for throws raised while reading `init` above.
     return Promise.$reject(e);
   }
 }
 fetch.preconnect = nativeFetch.preconnect;
+
+/**
+ * Resolves an undici UrlObject (`{origin, path}` or
+ * `{protocol, hostname, port, pathname, search}`) to a URL, following
+ * upstream's util.parseURL.
+ */
+function urlFromUrlObject(obj) {
+  let origin = obj.origin;
+  if (origin == null) {
+    const protocol = obj.protocol ?? "";
+    const port = obj.port ?? (protocol === "https:" ? 443 : 80);
+    origin = `${protocol}//${obj.hostname ?? ""}:${port}`;
+  } else {
+    origin = String(origin);
+  }
+  let path = obj.path ?? `${obj.pathname ?? ""}${obj.search ?? ""}`;
+  path = String(path);
+  if (origin.endsWith("/")) origin = origin.slice(0, -1);
+  if (path && path[0] !== "/") path = "/" + path;
+  return new URL(origin + path);
+}
 
 /**
  * An object representing a URL.
@@ -224,8 +237,7 @@ async function request(
     if (query) url = new URL(url);
   } else if (typeof url === "object" && url !== null) {
     if (!(url instanceof URL)) {
-      // TODO: Parse undici UrlObject
-      throw new Error("not implemented");
+      url = urlFromUrlObject(url);
     }
   } else throw new TypeError("url must be a string, URL, or UrlObject");
 
@@ -243,7 +255,7 @@ async function request(
     // TODO: Streaming via ReadableStream?
     let data = "";
     inputBody.setEncoding("utf8");
-    for await (const chunk of stream) {
+    for await (const chunk of inputBody) {
       data += chunk;
     }
     inputBody = new TextEncoder().encode(data);
@@ -259,7 +271,7 @@ async function request(
   }
 
   const followRedirects = maxRedirections != null && maxRedirections > 0;
-  const proxy = resolveProxy(dispatcher, url);
+  const proxy = resolveProxy(dispatcher);
 
   /** @type {Response} */
   const resp = await nativeFetch(url, {
@@ -313,29 +325,13 @@ function mockErrors() {}
 
 class Dispatcher extends EventEmitter {
   dispatch() {
-    throw new Error(
-      "Dispatcher.dispatch() is not implemented in Bun's builtin undici. " +
-        "Use fetch()/request() with a ProxyAgent dispatcher, or install undici from npm.",
-    );
+    notImplemented();
   }
 
+  // Upstream signature: request({ origin, path, method, ... }). The same
+  // object is both the UrlObject and the options bag for request().
   request(options, callback) {
-    let url = options;
-    let opts;
-    if (options != null && typeof options === "object" && !(options instanceof URL)) {
-      const { origin, path, ...rest } = options;
-      if (origin != null) {
-        // URL serialization always emits a trailing slash; strip it so
-        // `{origin: new URL(...), path: "/x"}` doesn't produce `//x`.
-        let o = String(origin);
-        if (o.endsWith("/")) o = o.slice(0, -1);
-        url = o + (path ?? "");
-      } else {
-        url = path;
-      }
-      opts = rest;
-    }
-    const p = request(url, { ...opts, dispatcher: this });
+    const p = request(options, { ...options, dispatcher: this });
     if (typeof callback === "function") {
       p.$then(
         data => callback(null, data),
@@ -373,7 +369,7 @@ class Dispatcher extends EventEmitter {
     return false;
   }
 
-  [kProxyFor](_url) {
+  [kProxyFor]() {
     return undefined;
   }
 }
@@ -420,70 +416,35 @@ class ProxyAgent extends Dispatcher {
     if (token != null && auth != null) {
       throw new InvalidArgumentError("opts.auth cannot be used in combination with opts.token");
     }
-    let headers;
+    // opts.headers are sent to the proxy (CONNECT / absolute-form request),
+    // same as upstream; token/auth become proxy-authorization on top of them.
+    const headers = opts.headers != null ? { ...opts.headers } : {};
     if (typeof token === "string") {
-      headers = { "proxy-authorization": token };
+      headers["proxy-authorization"] = token;
     } else if (typeof auth === "string") {
-      headers = { "proxy-authorization": `Basic ${auth}` };
+      headers["proxy-authorization"] = `Basic ${auth}`;
     }
-    this.#proxy = headers ? { url: String(uri), headers } : String(uri);
+    this.#proxy = Object.keys(headers).length > 0 ? { url: String(uri), headers } : String(uri);
   }
 
-  [kProxyFor](_url) {
+  [kProxyFor]() {
     return this.#proxy;
   }
 }
 
-// The httpProxy/httpsProxy/noProxy selection is evaluated once for the
-// initial URL; native fetch only accepts a single proxy href, so on a redirect
-// the same proxy is reused and opts.noProxy is not re-consulted per hop.
+// Native fetch already reads HTTP_PROXY/HTTPS_PROXY/NO_PROXY and re-evaluates
+// them on every redirect hop, so the zero-argument form just defers to it
+// (inherited kProxyFor returns undefined). The per-instance overrides would
+// need to be passed down to native; they are rejected rather than ignored.
 class EnvHttpProxyAgent extends Dispatcher {
-  #httpProxy;
-  #httpsProxy;
-  #noProxy;
-
-  constructor(opts = kEmptyObject) {
+  constructor(opts) {
     super();
-    const env = process.env;
-    this.#httpProxy = opts.httpProxy ?? env.http_proxy ?? env.HTTP_PROXY;
-    this.#httpsProxy = opts.httpsProxy ?? env.https_proxy ?? env.HTTPS_PROXY;
-    const noProxy = opts.noProxy ?? env.no_proxy ?? env.NO_PROXY;
-    this.#noProxy =
-      typeof noProxy === "string" && noProxy.length > 0
-        ? noProxy
-            .split(",")
-            .map(s => s.trim().toLowerCase())
-            .filter(Boolean)
-        : [];
-  }
-
-  #isNoProxy(hostname, port) {
-    const list = this.#noProxy;
-    if (list.length === 0) return false;
-    if (list.includes("*")) return true;
-    const hostport = port ? `${hostname}:${port}` : hostname;
-    for (let entry of list) {
-      if (entry[0] === ".") entry = entry.slice(1);
-      if (entry === hostname || entry === hostport) return true;
-      if (hostname.endsWith("." + entry)) return true;
+    if (opts != null && (opts.httpProxy != null || opts.httpsProxy != null || opts.noProxy != null)) {
+      throw new Error(
+        "EnvHttpProxyAgent's httpProxy/httpsProxy/noProxy options are not implemented in Bun; " +
+          "set the HTTP_PROXY/HTTPS_PROXY/NO_PROXY environment variables or use ProxyAgent",
+      );
     }
-    return false;
-  }
-
-  [kProxyFor](url) {
-    let protocol, hostname, port;
-    try {
-      ({ protocol, hostname, port } = new URL(url));
-    } catch {
-      return this.#httpProxy ?? "";
-    }
-    // WHATWG serializes IPv6 hostnames with brackets; NO_PROXY entries are
-    // conventionally unbracketed (curl/wget/Bun's native no_proxy_matches).
-    hostname = hostname.toLowerCase();
-    if (hostname[0] === "[") hostname = hostname.slice(1, -1);
-    if (this.#isNoProxy(hostname, port)) return "";
-    const proxy = protocol === "https:" ? this.#httpsProxy : this.#httpProxy;
-    return proxy ?? "";
   }
 }
 
@@ -495,8 +456,8 @@ class RetryAgent extends Dispatcher {
     this.#inner = dispatcher;
   }
 
-  [kProxyFor](url) {
-    return this.#inner?.[kProxyFor]?.(url);
+  [kProxyFor]() {
+    return this.#inner?.[kProxyFor]?.();
   }
 }
 
@@ -619,9 +580,6 @@ function serializeAMimeType() {
 let globalDispatcher;
 
 function setGlobalDispatcher(dispatcher) {
-  if (dispatcher == null || typeof dispatcher.dispatch !== "function") {
-    throw new InvalidArgumentError("Argument agent must implement Agent");
-  }
   globalDispatcher = dispatcher;
 }
 
