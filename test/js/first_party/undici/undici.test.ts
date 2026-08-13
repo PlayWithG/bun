@@ -73,14 +73,6 @@ describe("undici", () => {
       expect(json.url).toBe(`${hostUrl}/get`);
     });
 
-    // it("should accept an undici UrlObject", async () => {
-    //   // @ts-ignore
-    //   const { body } = await request({ protocol: "https:", hostname: host, path: "/get" });
-    //   expect(body).toBeDefined();
-    //   const json = (await body.json()) as { url: string };
-    //   expect(json.url).toBe(`${hostUrl}/get`);
-    // });
-
     it("should prevent body from being attached to GET or HEAD requests", async () => {
       try {
         await request(`${hostUrl}/get`, {
@@ -432,42 +424,10 @@ describe("undici ProxyAgent / dispatcher", () => {
     }
   });
 
-  it("EnvHttpProxyAgent() defers to native HTTP_PROXY / NO_PROXY handling", async () => {
-    // Native fetch reads the proxy env itself (and re-evaluates it per redirect
-    // hop), so the zero-arg agent must not override it. The env is read by the
-    // native side, so run in a subprocess with it set.
-    await using origin = recordingOrigin();
-    await using proxy = await recordingProxy();
-
-    const script = `
-      const { EnvHttpProxyAgent, fetch, setGlobalDispatcher } = require("undici");
-      setGlobalDispatcher(new EnvHttpProxyAgent());
-      const res = await fetch(process.argv[1]);
-      console.log(await res.text());
-    `;
-    const run = async (extraEnv: Record<string, string>, path: string) => {
-      await using proc = Bun.spawn({
-        cmd: [bunExe(), "-e", script, `${origin.url}${path}`],
-        env: { ...bunEnv, HTTP_PROXY: proxy.url, http_proxy: proxy.url, NO_PROXY: "", no_proxy: "", ...extraEnv },
-        stderr: "pipe",
-      });
-      const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
-      expect(stderr).toBe("");
-      expect(exitCode).toBe(0);
-      return stdout.trim();
-    };
-
-    expect(await run({}, "/env-proxied")).toBe("PROXIED");
-    expect(await run({ NO_PROXY: "127.0.0.1", no_proxy: "127.0.0.1" }, "/env-no-proxy")).toBe("ORIGIN");
-
-    expect(proxy.seen).toEqual([`GET ${origin.url}/env-proxied HTTP/1.1`]);
-    expect(origin.seen).toEqual(["/env-no-proxy"]);
-  });
-
   it("EnvHttpProxyAgent() re-evaluates NO_PROXY per redirect hop", async () => {
-    // Hop 1 targets a NO_PROXY host and goes direct; it redirects to a host
-    // that is not exempt, so hop 2 must be sent to the proxy. (The proxy
-    // answers itself, so nothing needs to listen on the hop-2 address.)
+    // The routing here is native's; this pins that a global EnvHttpProxyAgent
+    // stays out of its way: hop 1 (NO_PROXY host) goes direct, hop 2 (not
+    // exempt) must reach the proxy, which answers itself.
     await using proxy = await recordingProxy();
     const hop1Seen: string[] = [];
     await using exempt = Bun.serve({
@@ -541,9 +501,14 @@ describe("undici Client / Pool / Dispatcher.request (#14498, #21944)", () => {
     await using origin = Bun.serve({
       port: 0,
       fetch: async req =>
-        Response.json({ method: req.method, path: new URL(req.url).pathname, body: await req.text() }),
+        Response.json({
+          method: req.method,
+          path: new URL(req.url).pathname,
+          body: Buffer.from(await req.arrayBuffer()).toString("hex"),
+        }),
     });
     const originUrl = `http://127.0.0.1:${origin.port}`;
+    const hex = (s: string | Buffer) => Buffer.from(s).toString("hex");
 
     const client = new Client(originUrl);
     const r1 = await client.request({ path: "/from-client", method: "GET" });
@@ -559,9 +524,17 @@ describe("undici Client / Pool / Dispatcher.request (#14498, #21944)", () => {
     const r3 = await client.request({ origin: "http://127.0.0.1:1", path: "/bound", method: "GET" } as any);
     expect(await r3.body!.json()).toEqual({ method: "GET", path: "/bound", body: "" });
 
-    // A Readable body is consumed and sent.
+    // Readable bodies: string chunks, and binary chunks that are not valid UTF-8.
     const r4 = await client.request({ path: "/post", method: "POST", body: Readable.from(["hello ", "world"]) });
-    expect(await r4.body!.json()).toEqual({ method: "POST", path: "/post", body: "hello world" });
+    expect(await r4.body!.json()).toEqual({ method: "POST", path: "/post", body: hex("hello world") });
+    const bin = Buffer.from([0x00, 0xff, 0xfe, 0x80, 0xc3]);
+    const r5 = await client.request({ path: "/post-bin", method: "POST", body: Readable.from([bin]) });
+    expect(await r5.body!.json()).toEqual({ method: "POST", path: "/post-bin", body: hex(bin) });
+
+    // RetryAgent forwards request() to the dispatcher it wraps, so it keeps
+    // the Client's origin.
+    const r6 = await new RetryAgent(client).request({ path: "/via-retry", method: "GET" });
+    expect(await r6.body!.json()).toEqual({ method: "GET", path: "/via-retry", body: "" });
 
     await expect(client.close()).resolves.toBeUndefined();
     await expect(pool.destroy()).resolves.toBeUndefined();

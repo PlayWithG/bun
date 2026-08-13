@@ -242,12 +242,11 @@ async function request(
 
   if (inputBody && inputBody.read && inputBody instanceof Readable) {
     // TODO: Streaming via ReadableStream?
-    let data = "";
-    inputBody.setEncoding("utf8");
+    const chunks = [];
     for await (const chunk of inputBody) {
-      data += chunk;
+      chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
     }
-    inputBody = new TextEncoder().encode(data);
+    inputBody = Buffer.concat(chunks);
   }
 
   if (maxRedirections != null && (!Number.isInteger(maxRedirections) || maxRedirections < 0)) {
@@ -438,6 +437,12 @@ class RetryAgent extends Dispatcher {
   constructor(dispatcher, _options) {
     super();
     this.#inner = dispatcher;
+  }
+
+  request(options, callback) {
+    const inner = this.#inner;
+    if (inner != null && typeof inner.request === "function") return inner.request(options, callback);
+    return super.request(options, callback);
   }
 
   [kProxyFor]() {
