@@ -961,7 +961,11 @@ impl RuntimeTranspilerCache {
         self.input_byte_length = Some(source.contents.len() as u64);
 
         let mut features_hasher = Wyhash::init(SEED);
-        parser_options.hash_for_runtime_transpiler(&mut features_hasher, used_jsx);
+        parser_options.hash_for_runtime_transpiler(
+            &mut features_hasher,
+            used_jsx,
+            bun_ast::RuntimeTranspilerCache::mentions_import_meta(&source.contents),
+        );
         self.features_hash = Some(features_hasher.final_());
 
         self.entry = match Self::from_file(

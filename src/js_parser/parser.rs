@@ -368,7 +368,7 @@ pub mod Runtime {
         pub(crate) fn hash_for_runtime_transpiler(&self, hasher: &mut Wyhash) {
             debug_assert!(self.runtime_transpiler_cache.is_some());
 
-            let bools: [bool; 18] = [
+            let bools: [bool; 17] = [
                 self.top_level_await,
                 self.auto_import_jsx,
                 self.allow_runtime,
@@ -386,7 +386,11 @@ pub mod Runtime {
                 self.standard_decorators,
                 self.lower_using,
                 self.repl_mode,
-                self.runtime_hot,
+                // `runtime_hot` is hashed by `Options::hash_for_runtime_transpiler`,
+                // and only for sources that mention `import.meta`: it is the only
+                // thing whose output the flag changes, and hashing it
+                // unconditionally would make `bun --hot` and plain runs evict
+                // each other's cache entries for every file.
                 // note that we do not include .inject_jest_globals, as we bail out of the cache entirely if this is true
             ];
 

@@ -292,6 +292,46 @@ describe("transpiler cache", () => {
       expect(newCacheCount()).toBe(0);
     });
   });
+
+  test("--hot only invalidates entries for files that use import.meta", () => {
+    const filler = "\n//" + Buffer.alloc((50 * 1024 * 1.5) | 0, "/").toString();
+    writeFileSync(join(temp_dir, "plain.js"), `console.log("plain"); process.exit(0);` + filler);
+    writeFileSync(join(temp_dir, "hot.js"), `console.log(typeof import.meta.hot); process.exit(0);` + filler);
+
+    const run = (extra: string[], file: string) => {
+      const result = Bun.spawnSync({
+        cmd: [bunExe(), ...extra, file],
+        cwd: temp_dir,
+        env,
+      });
+      if (!result.success) throw new Error(result.stderr.toString());
+      return result.stdout.toString().trim();
+    };
+    // Cache files are named by the source's content hash; a features-hash
+    // mismatch rewrites the file in place, so snapshot the entries' bytes to
+    // tell a hit from a rewrite.
+    const entries = () =>
+      Object.fromEntries(readdirSync(cache_dir).map(name => [name, Bun.hash(readFileSync(join(cache_dir, name)))]));
+
+    expect(run([], "plain.js")).toBe("plain");
+    expect(newCacheCount()).toBe(1);
+    const plainEntries = entries();
+    expect(run(["--hot"], "plain.js")).toBe("plain");
+    expect(entries()).toEqual(plainEntries);
+    expect(run([], "plain.js")).toBe("plain");
+    expect(entries()).toEqual(plainEntries);
+
+    expect(run([], "hot.js")).toBe("undefined");
+    expect(newCacheCount()).toBe(1);
+    const withHotFolded = entries();
+    expect(run(["--hot"], "hot.js")).toBe("object");
+    const withHotLive = entries();
+    expect(newCacheCount()).toBe(0);
+    expect(withHotLive).not.toEqual(withHotFolded);
+    expect(withHotLive).toMatchObject(plainEntries);
+    expect(run([], "hot.js")).toBe("undefined");
+    expect(entries()).toEqual(withHotFolded);
+  });
 });
 
 test("rejects cached module records containing out-of-range string indices", () => {

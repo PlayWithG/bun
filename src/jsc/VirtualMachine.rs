@@ -302,6 +302,9 @@ pub struct VirtualMachine {
     pub pending_internal_promise_is_protected: bool,
     pub pending_internal_promise_reported_at: u32,
     pub(crate) hot_reload_deferred: bool,
+    /// Set while a reload is waiting on promises returned from
+    /// `import.meta.hot.dispose()` callbacks; see [`Self::reload`].
+    pub hot_reload_dispose_promise: crate::strong::Optional,
     pub entry_point_result: EntryPointResult,
 
     pub on_unhandled_rejection: OnUnhandledRejection,
@@ -1112,6 +1115,13 @@ impl VirtualMachine {
 
     pub(crate) fn is_main_thread(&self) -> bool {
         self.worker.is_none()
+    }
+
+    /// Whether this VM soft-reloads on file changes (`bun --hot`), i.e. whether
+    /// `import.meta.hot` exists. Workers inherit `hot_reload` from the parent
+    /// but are never reloaded, so it is only true on the main VM.
+    pub fn is_hot_reload_enabled(&self) -> bool {
+        self.hot_reload == HOT_RELOAD_HOT && self.is_main_thread()
     }
 
     pub fn is_inspector_enabled(&self) -> bool {
@@ -3806,15 +3816,45 @@ impl VirtualMachine {
         }
         self.hot_reload_deferred = false;
 
-        bun_core::debug!("Reloading...");
-        let should_clear_terminal = !self
-            .env_loader()
-            .has_set_no_clear_terminal_on_reload(!bun_core::Output::enable_ansi_colors_stdout());
-        if should_clear_terminal {
-            bun_core::Output::flush();
-            bun_core::Output::disable_buffering();
-            bun_core::Output::reset_terminal_all();
-            bun_core::Output::enable_buffering();
+        if let Some(dispose) = self.hot_reload_dispose_promise.get() {
+            // A previous call already ran the dispose callbacks and is waiting
+            // for the promises they returned. Changes that arrive meanwhile
+            // coalesce into the reload that runs once they settle.
+            let promise = dispose
+                .as_promise()
+                .expect("hot_reload_dispose_promise only ever holds a promise");
+            if crate::JSPromise::status_ptr(promise) == crate::js_promise::Status::Pending {
+                self.hot_reload_deferred = true;
+                return;
+            }
+            self.hot_reload_dispose_promise.clear_without_deallocation();
+        } else {
+            bun_core::debug!("Reloading...");
+            let should_clear_terminal =
+                !self.env_loader().has_set_no_clear_terminal_on_reload(
+                    !bun_core::Output::enable_ansi_colors_stdout(),
+                );
+            if should_clear_terminal {
+                bun_core::Output::flush();
+                bun_core::Output::disable_buffering();
+                bun_core::Output::reset_terminal_all();
+                bun_core::Output::enable_buffering();
+            }
+
+            // Runs `import.meta.hot.dispose()` callbacks. If any returned a
+            // still-pending promise this yields a promise that settles when
+            // they all have; the event loop's deferred-reload poll
+            // (`report_exception_in_hot_reloaded_module_if_needed`) calls back
+            // into `reload` and the branch above resumes from here.
+            let global = self.global();
+            let dispose = crate::cpp::JSC__JSGlobalObject__runImportMetaHotDispose(global);
+            if let Some(promise) = dispose.as_promise() {
+                if crate::JSPromise::status_ptr(promise) == crate::js_promise::Status::Pending {
+                    self.hot_reload_dispose_promise.set(global, dispose);
+                    self.hot_reload_deferred = true;
+                    return;
+                }
+            }
         }
 
         if let Some(hooks) = runtime_hooks() {
@@ -4739,6 +4779,7 @@ impl VirtualMachine {
         drop(core::mem::take(&mut self.resolved_path_dups));
 
         self.overridden_main.deinit();
+        self.hot_reload_dispose_promise.deinit();
 
         // `timer`/`entry_point` live in the high-tier `RuntimeState` box, so
         // dispatch the reclaim through the hook.
