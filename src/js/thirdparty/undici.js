@@ -35,12 +35,9 @@ function notImplemented() {
   throw new Error("This function is not yet implemented in Bun");
 }
 
-// The only dispatcher behaviour this shim implements is proxying: a dispatcher
-// that carries a proxy (ProxyAgent, or RetryAgent wrapping one) returns the
-// value for native fetch's `proxy` option from this method; every other
-// dispatcher returns undefined and the request goes to native fetch unchanged,
-// which applies HTTP_PROXY/HTTPS_PROXY/NO_PROXY itself (including on redirects).
-// Custom dispatch() implementations are not invoked.
+// Proxying is the only dispatcher behaviour implemented: ProxyAgent returns a
+// value for native fetch's `proxy` option here, every other dispatcher returns
+// undefined and the request reaches native fetch (and its *_PROXY env) unchanged.
 const kProxyFor = Symbol("kProxyFor");
 
 function resolveProxy(dispatcher) {
@@ -55,10 +52,8 @@ function applyDispatcher(options) {
   const proxy = resolveProxy(options?.dispatcher);
   if (proxy === undefined) return options;
   if (options == null) return { proxy };
-  // Bun's fetch(url, Request) reads method/headers/body via prototype getters;
-  // spreading a Request yields `{}`, so pass it through untouched.
+  // Spreading a Request yields {} (its fields are prototype getters).
   if (options instanceof Request) return options;
-  // Don't clobber a caller-provided Bun proxy option.
   if (options.proxy !== undefined) return options;
   return { ...options, proxy };
 }
@@ -67,18 +62,12 @@ function fetch(input, init) {
   try {
     return nativeFetch(input, applyDispatcher(init));
   } catch (e) {
-    // fetch() rejects rather than throwing on option conversion; keep that
-    // contract for throws raised while reading `init` above.
     return Promise.$reject(e);
   }
 }
 fetch.preconnect = nativeFetch.preconnect;
 
-/**
- * Resolves an undici UrlObject (`{origin, path}` or
- * `{protocol, hostname, port, pathname, search}`) to a URL, following
- * upstream's util.parseURL.
- */
+// Mirrors upstream util.parseURL for the UrlObject forms of request().
 function urlFromUrlObject(obj) {
   let origin = obj.origin;
   if (origin == null) {
@@ -328,8 +317,7 @@ class Dispatcher extends EventEmitter {
     notImplemented();
   }
 
-  // Upstream signature: request({ origin, path, method, ... }). The same
-  // object is both the UrlObject and the options bag for request().
+  // `options` is both the UrlObject ({ origin, path }) and the request options.
   request(options, callback) {
     const p = request(options, { ...options, dispatcher: this });
     if (typeof callback === "function") {
@@ -416,8 +404,6 @@ class ProxyAgent extends Dispatcher {
     if (token != null && auth != null) {
       throw new InvalidArgumentError("opts.auth cannot be used in combination with opts.token");
     }
-    // opts.headers are sent to the proxy (CONNECT / absolute-form request),
-    // same as upstream; token/auth become proxy-authorization on top of them.
     const headers = opts.headers != null ? { ...opts.headers } : {};
     if (typeof token === "string") {
       headers["proxy-authorization"] = token;
@@ -432,10 +418,8 @@ class ProxyAgent extends Dispatcher {
   }
 }
 
-// Native fetch already reads HTTP_PROXY/HTTPS_PROXY/NO_PROXY and re-evaluates
-// them on every redirect hop, so the zero-argument form just defers to it
-// (inherited kProxyFor returns undefined). The per-instance overrides would
-// need to be passed down to native; they are rejected rather than ignored.
+// Native fetch applies the *_PROXY env itself (per redirect hop), so this
+// inherits the undefined kProxyFor; the per-instance overrides are unsupported.
 class EnvHttpProxyAgent extends Dispatcher {
   constructor(opts) {
     super();
