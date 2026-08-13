@@ -224,7 +224,6 @@ describe("undici.request maxRedirections", () => {
   });
 });
 
-
 // A minimal HTTP proxy that records every request it sees. Supports both
 // absolute-form requests (http:// targets) and CONNECT (tunneled targets).
 async function recordingProxy() {
@@ -465,6 +464,42 @@ describe("undici ProxyAgent / dispatcher", () => {
     expect(origin.seen).toEqual(["/env-no-proxy"]);
   });
 
+  it("EnvHttpProxyAgent() re-evaluates NO_PROXY per redirect hop", async () => {
+    // Hop 1 targets a NO_PROXY host and goes direct; it redirects to a host
+    // that is not exempt, so hop 2 must be sent to the proxy. (The proxy
+    // answers itself, so nothing needs to listen on the hop-2 address.)
+    await using proxy = await recordingProxy();
+    const hop1Seen: string[] = [];
+    await using exempt = Bun.serve({
+      port: 0,
+      hostname: "127.0.0.1",
+      fetch: req => {
+        hop1Seen.push(new URL(req.url).pathname);
+        return Response.redirect("http://127.0.0.2:9/hop2", 302);
+      },
+    });
+
+    await using proc = Bun.spawn({
+      cmd: [
+        bunExe(),
+        "-e",
+        `const { EnvHttpProxyAgent, fetch, setGlobalDispatcher } = require("undici");
+         setGlobalDispatcher(new EnvHttpProxyAgent());
+         console.log(await (await fetch(process.argv[1])).text());`,
+        `http://127.0.0.1:${exempt.port}/hop1`,
+      ],
+      env: { ...bunEnv, HTTP_PROXY: proxy.url, http_proxy: proxy.url, NO_PROXY: "127.0.0.1", no_proxy: "127.0.0.1" },
+      stderr: "pipe",
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+    expect(stderr).toBe("");
+    expect(stdout.trim()).toBe("PROXIED");
+    expect(exitCode).toBe(0);
+
+    expect(hop1Seen).toEqual(["/hop1"]);
+    expect(proxy.seen).toEqual(["GET http://127.0.0.2:9/hop2 HTTP/1.1"]);
+  });
+
   it("EnvHttpProxyAgent rejects per-instance overrides instead of ignoring them", () => {
     expect(() => new EnvHttpProxyAgent()).not.toThrow();
     expect(() => new EnvHttpProxyAgent({})).not.toThrow();
@@ -505,7 +540,8 @@ describe("undici Client / Pool / Dispatcher.request (#14498, #21944)", () => {
   it("Client and Pool bind to their constructor origin", async () => {
     await using origin = Bun.serve({
       port: 0,
-      fetch: async req => Response.json({ method: req.method, path: new URL(req.url).pathname, body: await req.text() }),
+      fetch: async req =>
+        Response.json({ method: req.method, path: new URL(req.url).pathname, body: await req.text() }),
     });
     const originUrl = `http://127.0.0.1:${origin.port}`;
 
@@ -538,7 +574,11 @@ describe("undici Client / Pool / Dispatcher.request (#14498, #21944)", () => {
     });
 
     const agent = new Agent();
-    const res = await agent.request({ origin: new URL(`http://127.0.0.1:${origin.port}`), path: "/agent", method: "GET" });
+    const res = await agent.request({
+      origin: new URL(`http://127.0.0.1:${origin.port}`),
+      path: "/agent",
+      method: "GET",
+    });
     expect(await res.body!.json()).toEqual({ path: "/agent" });
 
     await expect(agent.close()).resolves.toBeUndefined();
