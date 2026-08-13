@@ -88,7 +88,11 @@ describe("bunfig jsx overrides tsconfig jsx (#15844)", () => {
       "tsconfig.json": JSON.stringify({ compilerOptions: { jsx: "react-jsx", jsxImportSource: "preact" } }),
       "index.tsx": `export const A = (p: any) => <div {...p} key="k" />;\n`,
     });
-    const { stdout, exitCode } = await build(String(dir));
+    const { stdout, stderr, exitCode } = await build(String(dir));
+    // key-after-spread is the one automatic-runtime shape that falls back to createElement,
+    // so this is the only warning expected on stderr.
+    expect(stderr).toContain('"key" prop after a {...spread} is deprecated in JSX');
+    expect(stderr).not.toContain("error:");
     expect(stdout).toContain(`from "preact"`);
     expect(stdout).not.toContain(`from "react"`);
     expect(exitCode).toBe(0);
