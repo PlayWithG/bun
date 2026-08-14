@@ -229,21 +229,33 @@ describe("Set and Map entries without an identical counterpart", () => {
 
   // Without matchers in play structural equality is an equivalence relation, so the
   // comparison can insist on a one-to-one pairing. expect() cannot: an asymmetric matcher
-  // accepts several members, so it falls back to requiring a counterpart for every member
-  // on either side (what Jest checks), which accepts these two.
+  // accepts several members, so when the pairing fails it falls back to requiring a
+  // counterpart for every member on either side (what Jest checks), which accepts
+  // different duplicate counts. Whether one of the duplicates is the same object on both
+  // sides must not change either answer.
+  const sharedKey = { k: 1 };
+  const duplicateCountCases: [string, unknown, unknown][] = [
+    ["Set", set({ a: 1 }, { a: 1 }, { a: 2 }), set({ a: 1 }, { a: 2 }, { a: 2 })],
+    ["Set sharing a member", set(shared, { a: 1 }, { a: 2 }), set(shared, { a: 2 }, { a: 2 })],
+    ["Map", map([{ k: 1 }, 1], [{ k: 1 }, 1], [{ k: 1 }, 2]), map([{ k: 1 }, 1], [{ k: 1 }, 2], [{ k: 1 }, 2])],
+    [
+      "Map sharing a key",
+      map([sharedKey, 1], [{ k: 1 }, 1], [{ k: 1 }, 2]),
+      map([sharedKey, 1], [{ k: 1 }, 2], [{ k: 1 }, 2]),
+    ],
+  ];
+
   describe.each(Object.entries(exactEntryPoints))("%s", (_, check) => {
-    it("Set: different duplicate counts", () => {
-      const a = set({ a: 1 }, { a: 1 }, { a: 2 });
-      const b = set({ a: 1 }, { a: 2 }, { a: 2 });
+    it.each(duplicateCountCases)("%s: different duplicate counts", (_, a, b) => {
       check(a, b, false);
       check(b, a, false);
     });
+  });
 
-    it("Map: different duplicate counts of a value under equal keys", () => {
-      const a = map([{ k: 1 }, 1], [{ k: 1 }, 1], [{ k: 1 }, 2]);
-      const b = map([{ k: 1 }, 1], [{ k: 1 }, 2], [{ k: 1 }, 2]);
-      check(a, b, false);
-      check(b, a, false);
+  describe.each(Object.entries(expectEntryPoints))("%s", (_, check) => {
+    it.each(duplicateCountCases)("%s: different duplicate counts", (_, a, b) => {
+      check(a, b, true);
+      check(b, a, true);
     });
   });
 
