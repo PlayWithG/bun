@@ -1385,9 +1385,7 @@ impl Request {
                                 Err(e) => bail!(Err(e)),
                             };
                             if keepalive {
-                                bail!(Err(
-                                    global_this.throw_type_error(format_args!("keepalive"))
-                                ));
+                                bail!(Err(global_this.throw_type_error(format_args!("keepalive"))));
                             }
                         }
                         match BodyValue::from_js(global_this, body_) {
