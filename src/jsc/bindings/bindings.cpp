@@ -1240,22 +1240,15 @@ static std::optional<bool> temporalObjectsDequal(JSC::JSObject* o1, JSC::JSObjec
     return std::nullopt;
 }
 
-// Pairs off the entries that setContentsEqual / mapContentsEqual below could not match
-// through the hash tables: one slot per Set member, a key slot followed by a value slot per
-// Map entry, `left` coming from the first operand. Every left entry has to take a distinct
-// structurally equal right entry, so a value that occurs twice on one side needs two
-// counterparts on the other. Like node, this guesses that the counterpart is the next
-// entry at one end of what is left (the sides were built in the same or in opposite
-// order) before sweeping the rest, so those cases take one comparison per entry.
+// `left` holds the first operand's entries that missed the other side's hash table, `right`
+// the second's: one slot per Set member, key and value slots per Map entry. Each left entry
+// takes a distinct structurally equal right entry, tried at the ends of the open range first
+// (same or opposite insertion order: one comparison per entry, like node).
 //
-// An asymmetric matcher accepts several different entries, so with matchers enabled an
-// earlier left entry may have taken the one a later entry needed ({a:1} takes
-// expect.anything(), leaving {a:2} facing the concrete {a:1}). Jest only requires every
-// entry to have some counterpart on the other side, so such an entry falls back to
-// leftEntryHasCounterpart(leftIndex), and once everything else has been paired off every
-// right entry nobody took has to pass rightEntryHasCounterpart(rightIndex). Both look through
-// the whole other collection, not just these buffers, so the answer does not depend on which
-// members happened to be settled through the hash table. Without matchers neither is called.
+// Asymmetric matchers accept several entries each, so with them enabled an entry that finds
+// nothing may have had its counterpart taken earlier. Jest then only asks for some
+// counterpart per entry: leftEntryHasCounterpart(index) for it, rightEntryHasCounterpart(index)
+// for each right entry left over at the end. Both search the whole other collection.
 template<bool isStrict, bool enableAsymmetricMatchers, bool checkPrototypes, bool skipPrototypeIdentity, bool entriesHaveValues, typename LeftEntryHasCounterpart, typename RightEntryHasCounterpart>
 static bool pairOffEntries(JSC::JSGlobalObject* globalObject, MarkedArgumentBuffer& gcBuffer, Vector<std::pair<JSC::JSValue, JSC::JSValue>, 16>& stack, ThrowScope& scope, const MarkedArgumentBuffer& left, const MarkedArgumentBuffer& right, const LeftEntryHasCounterpart& leftEntryHasCounterpart, const RightEntryHasCounterpart& rightEntryHasCounterpart)
 {
@@ -1276,8 +1269,7 @@ static bool pairOffEntries(JSC::JSGlobalObject* globalObject, MarkedArgumentBuff
         return equal;
     };
 
-    // open[start, end) holds the indices of the right entries nobody has taken yet. Taking
-    // one out of the middle moves the entry at the end being swept from into its place.
+    // Indices of the right entries not taken yet live in open[start, end).
     Vector<size_t, 16> open(count, [](size_t i) { return i; });
     size_t start = 0;
     size_t end = count;
@@ -1325,8 +1317,7 @@ static bool pairOffEntries(JSC::JSGlobalObject* globalObject, MarkedArgumentBuff
             continue;
 
         if constexpr (!enableAsymmetricMatchers) {
-            // Without matchers structural equality is an equivalence relation, so no
-            // other pairing could have left an entry for this one: the multisets differ.
+            // Structural equality is an equivalence relation here, so no other pairing would help.
             return false;
         } else {
             bool hasCounterpart = leftEntryHasCounterpart(i);
@@ -1351,8 +1342,7 @@ static bool pairOffEntries(JSC::JSGlobalObject* globalObject, MarkedArgumentBuff
     return true;
 }
 
-// pairOffEntries fallbacks. `memberIsFromSet1` / `entryIsFromMap1` keep the operands in
-// their original order, which matters for matchers and for the cycle stack.
+// pairOffEntries fallbacks. The operand order matters to matchers and to the cycle stack.
 template<bool isStrict, bool enableAsymmetricMatchers, bool checkPrototypes, bool skipPrototypeIdentity>
 static bool setHasCounterpart(JSC::JSGlobalObject* globalObject, MarkedArgumentBuffer& gcBuffer, Vector<std::pair<JSC::JSValue, JSC::JSValue>, 16>& stack, ThrowScope& scope, JSValue member, bool memberIsFromSet1, JSSet* otherSet)
 {
@@ -1394,9 +1384,8 @@ static bool mapHasCounterpart(JSC::JSGlobalObject* globalObject, MarkedArgumentB
     return false;
 }
 
-// Members the other set holds by SameValueZero (primitives, shared objects) are matched
-// through its hash table. Only the rest, distinct objects that may still be structurally
-// equal, need the pairwise comparisons in pairOffEntries.
+// Members the other side holds by SameValueZero are settled through its hash table; only
+// the rest (distinct objects) go through pairOffEntries.
 template<bool isStrict, bool enableAsymmetricMatchers, bool checkPrototypes, bool skipPrototypeIdentity>
 static bool setContentsEqual(JSC::JSGlobalObject* globalObject, MarkedArgumentBuffer& gcBuffer, Vector<std::pair<JSC::JSValue, JSC::JSValue>, 16>& stack, ThrowScope& scope, JSSet* set1, JSSet* set2)
 {
@@ -1428,8 +1417,6 @@ static bool setContentsEqual(JSC::JSGlobalObject* globalObject, MarkedArgumentBu
         return true;
     }
 
-    // The sizes are equal, so the members set1 does not hold are exactly the
-    // candidates left for unmatched1.
     MarkedArgumentBuffer unmatched2;
     {
         auto iter = JSSetIterator::create(vm, globalObject->setIteratorStructure(), set2, IterationKind::Keys);
@@ -1452,11 +1439,9 @@ static bool setContentsEqual(JSC::JSGlobalObject* globalObject, MarkedArgumentBu
         [&](size_t index) { return setHasCounterpart<isStrict, enableAsymmetricMatchers, checkPrototypes, skipPrototypeIdentity>(globalObject, gcBuffer, stack, scope, unmatched2.at(index), false, set1); });
 }
 
-// Entries whose key the other map holds by SameValueZero are matched through its hash
-// table when the values agree as well. The rest go to pairOffEntries as key/value slot
-// pairs. When the key is held but the values disagree, map2's entry goes in too: a
-// structurally equal key elsewhere may carry each value, as in
-// Map([[k, 1], [{...k}, 2]]) against Map([[k, 2], [{...k}, 1]]).
+// Same as setContentsEqual, except that an entry is only settled when the values agree too.
+// Otherwise both maps' entries for the key go through pairOffEntries, since a structurally
+// equal key elsewhere may carry each value: Map([[k, 1], [{...k}, 2]]) equals Map([[k, 2], [{...k}, 1]]).
 template<bool isStrict, bool enableAsymmetricMatchers, bool checkPrototypes, bool skipPrototypeIdentity>
 static bool mapContentsEqual(JSC::JSGlobalObject* globalObject, MarkedArgumentBuffer& gcBuffer, Vector<std::pair<JSC::JSValue, JSC::JSValue>, 16>& stack, ThrowScope& scope, JSMap* map1, JSMap* map2)
 {
@@ -1486,8 +1471,7 @@ static bool mapContentsEqual(JSC::JSGlobalObject* globalObject, MarkedArgumentBu
                 }
             }
             if constexpr (!enableAsymmetricMatchers) {
-                // Only an asymmetric matcher could equal a primitive key, and map2's own
-                // entry for it (if any) was just rejected.
+                // Only an asymmetric matcher could still equal a primitive key.
                 if (key.isPrimitive()) {
                     return false;
                 }
