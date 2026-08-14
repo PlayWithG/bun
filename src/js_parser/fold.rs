@@ -498,6 +498,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                     }
 
                     if name == b"hot" {
+                        p.has_import_meta_hot = true;
                         if p.options.features.hot_module_reloading {
                             return Some(Expr {
                                 data: js_ast::ExprData::ESpecial(E::Special::HotEnabled),

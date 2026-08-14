@@ -222,17 +222,8 @@ impl<'a> Options<'a> {
         }
     }
 
-    pub fn hash_for_runtime_transpiler(
-        &self,
-        hasher: &mut Wyhash,
-        did_use_jsx: bool,
-        uses_runtime_hot: bool,
-    ) {
+    pub fn hash_for_runtime_transpiler(&self, hasher: &mut Wyhash, did_use_jsx: bool) {
         debug_assert!(!self.bundle);
-
-        if uses_runtime_hot {
-            hasher.update(b"HOT");
-        }
 
         if did_use_jsx {
             if self.jsx.parse {
@@ -1725,17 +1716,6 @@ impl<'a> Parser<'a> {
             exports_kind = js_ast::ExportsKind::EsmWithDynamicFallbackFromCjs;
         }
 
-        // The cache key omits `runtime_hot` when the textual check misses
-        // `import.meta`; do not persist output that depends on it.
-        if p.options.features.runtime_hot
-            && p.has_import_meta
-            && !bun_ast::RuntimeTranspilerCache::mentions_import_meta(&p.source.contents)
-        {
-            if let Some(cache) = p.options.features.runtime_transpiler_cache_mut() {
-                cache.input_hash = None;
-            }
-        }
-
         // Auto inject jest globals into the test file
         'outer: {
             if !p.options.features.inject_jest_globals {
@@ -2141,6 +2121,10 @@ impl<'a> Parser<'a> {
                     cache.input_hash = None;
                 } else {
                     cache.exports_kind = exports_kind;
+                    cache.import_meta_hot = js_ast::ImportMetaHotMode::record(
+                        p.has_import_meta_hot,
+                        p.options.features.runtime_hot,
+                    );
                 }
             }
         }

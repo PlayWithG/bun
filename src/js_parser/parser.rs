@@ -384,8 +384,6 @@ pub mod Runtime {
                 self.standard_decorators,
                 self.lower_using,
                 self.repl_mode,
-                // `runtime_hot` is hashed per-source by
-                // `Options::hash_for_runtime_transpiler`.
                 // note that we do not include .inject_jest_globals, as we bail out of the cache entirely if this is true
             ];
 
