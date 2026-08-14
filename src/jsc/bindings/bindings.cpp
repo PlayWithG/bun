@@ -1240,10 +1240,251 @@ static std::optional<bool> temporalObjectsDequal(JSC::JSObject* o1, JSC::JSObjec
     return std::nullopt;
 }
 
+// Pairs off the entries that setContentsEqual / mapContentsEqual below could not match
+// through the hash tables: one slot per Set member, a key slot followed by a value slot per
+// Map entry, `left` coming from the first operand. Every left entry has to take a distinct
+// structurally equal right entry, so a value that occurs twice on one side needs two
+// counterparts on the other. Like node, this guesses that the counterpart is the next
+// entry at one end of what is left (the sides were built in the same or in opposite
+// order) before sweeping the rest, so those cases take one comparison per entry.
+template<bool isStrict, bool enableAsymmetricMatchers, bool checkPrototypes, bool skipPrototypeIdentity, bool entriesHaveValues>
+static bool pairOffEntries(JSC::JSGlobalObject* globalObject, MarkedArgumentBuffer& gcBuffer, Vector<std::pair<JSC::JSValue, JSC::JSValue>, 16>& stack, ThrowScope& scope, const MarkedArgumentBuffer& left, const MarkedArgumentBuffer& right)
+{
+    constexpr size_t slotsPerEntry = entriesHaveValues ? 2 : 1;
+    ASSERT(left.size() == right.size());
+    const size_t count = left.size() / slotsPerEntry;
+
+    auto entriesEqual = [&](size_t leftIndex, size_t rightIndex) -> bool {
+        size_t l = leftIndex * slotsPerEntry;
+        size_t r = rightIndex * slotsPerEntry;
+        bool equal = Bun__deepEquals<isStrict, enableAsymmetricMatchers, checkPrototypes, skipPrototypeIdentity>(globalObject, left.at(l), right.at(r), gcBuffer, stack, scope, true);
+        if constexpr (entriesHaveValues) {
+            RETURN_IF_EXCEPTION(scope, false);
+            if (!equal)
+                return false;
+            equal = Bun__deepEquals<isStrict, enableAsymmetricMatchers, checkPrototypes, skipPrototypeIdentity>(globalObject, left.at(l + 1), right.at(r + 1), gcBuffer, stack, scope, true);
+        }
+        return equal;
+    };
+
+    // open[start, end) holds the indices of the right entries nobody has taken yet. Taking
+    // one out of the middle moves the entry at the end being swept from into its place.
+    Vector<size_t, 16> open(count, [](size_t i) { return i; });
+    size_t start = 0;
+    size_t end = count;
+    bool guessFront = true;
+    bool someRightEntryStaysOpen = false;
+    for (size_t i = 0; i < count; i++) {
+        ASSERT(start < end);
+        bool equal = entriesEqual(i, open[guessFront ? start : end - 1]);
+        RETURN_IF_EXCEPTION(scope, false);
+        if (equal) {
+            if (guessFront)
+                start++;
+            else
+                end--;
+            continue;
+        }
+
+        bool paired = false;
+        if (guessFront) {
+            for (size_t k = end; k-- > start + 1;) {
+                equal = entriesEqual(i, open[k]);
+                RETURN_IF_EXCEPTION(scope, false);
+                if (!equal)
+                    continue;
+                guessFront = k != end - 1;
+                end--;
+                open[k] = open[end];
+                paired = true;
+                break;
+            }
+        } else {
+            for (size_t k = start; k < end - 1; k++) {
+                equal = entriesEqual(i, open[k]);
+                RETURN_IF_EXCEPTION(scope, false);
+                if (!equal)
+                    continue;
+                guessFront = true;
+                open[k] = open[start];
+                start++;
+                paired = true;
+                break;
+            }
+        }
+        if (paired)
+            continue;
+
+        if constexpr (!enableAsymmetricMatchers) {
+            // Without matchers structural equality is an equivalence relation, so no
+            // other pairing could have left an entry for this one: the multisets differ.
+            return false;
+        } else {
+            // An asymmetric matcher accepts several different entries, so an earlier left
+            // entry may have taken the one this entry needed ({a:1} takes
+            // expect.anything(), leaving {a:2} facing the concrete {a:1}). Jest only
+            // requires every entry to have some counterpart on the other side, so fall
+            // back to that: any right entry for this one, and, once everything has been
+            // paired off, any left entry for each right entry nobody took.
+            bool hasCounterpart = false;
+            for (size_t j = 0; j < count && !hasCounterpart; j++) {
+                hasCounterpart = entriesEqual(i, j);
+                RETURN_IF_EXCEPTION(scope, false);
+            }
+            if (!hasCounterpart)
+                return false;
+            someRightEntryStaysOpen = true;
+        }
+    }
+
+    if constexpr (enableAsymmetricMatchers) {
+        if (someRightEntryStaysOpen) {
+            for (size_t k = start; k < end; k++) {
+                bool hasCounterpart = false;
+                for (size_t i = 0; i < count && !hasCounterpart; i++) {
+                    hasCounterpart = entriesEqual(i, open[k]);
+                    RETURN_IF_EXCEPTION(scope, false);
+                }
+                if (!hasCounterpart)
+                    return false;
+            }
+        }
+    }
+
+    return true;
+}
+
+// Members the other set holds by SameValueZero (primitives, shared objects) are matched
+// through its hash table. Only the rest, distinct objects that may still be structurally
+// equal, need the pairwise comparisons in pairOffEntries.
+template<bool isStrict, bool enableAsymmetricMatchers, bool checkPrototypes, bool skipPrototypeIdentity>
+static bool setContentsEqual(JSC::JSGlobalObject* globalObject, MarkedArgumentBuffer& gcBuffer, Vector<std::pair<JSC::JSValue, JSC::JSValue>, 16>& stack, ThrowScope& scope, JSSet* set1, JSSet* set2)
+{
+    VM& vm = globalObject->vm();
+    if (set1->size() != set2->size()) {
+        return false;
+    }
+
+    MarkedArgumentBuffer unmatched1;
+    {
+        auto iter = JSSetIterator::create(vm, globalObject->setIteratorStructure(), set1, IterationKind::Keys);
+        JSValue key;
+        while (iter->next(globalObject, key)) {
+            bool has = set2->has(globalObject, key);
+            RETURN_IF_EXCEPTION(scope, false);
+            if (has) {
+                continue;
+            }
+            if constexpr (!enableAsymmetricMatchers) {
+                // Only an asymmetric matcher could equal a primitive set2 does not hold.
+                if (key.isPrimitive()) {
+                    return false;
+                }
+            }
+            unmatched1.appendWithCrashOnOverflow(key);
+        }
+    }
+    if (unmatched1.isEmpty()) {
+        return true;
+    }
+
+    // The sizes are equal, so the members set1 does not hold are exactly the
+    // candidates left for unmatched1.
+    MarkedArgumentBuffer unmatched2;
+    {
+        auto iter = JSSetIterator::create(vm, globalObject->setIteratorStructure(), set2, IterationKind::Keys);
+        JSValue key;
+        while (iter->next(globalObject, key)) {
+            bool has = set1->has(globalObject, key);
+            RETURN_IF_EXCEPTION(scope, false);
+            if (!has) {
+                unmatched2.appendWithCrashOnOverflow(key);
+            }
+        }
+    }
+    if (unmatched1.size() != unmatched2.size()) {
+        return false;
+    }
+
+    return pairOffEntries<isStrict, enableAsymmetricMatchers, checkPrototypes, skipPrototypeIdentity, false>(globalObject, gcBuffer, stack, scope, unmatched1, unmatched2);
+}
+
+// Entries whose key the other map holds by SameValueZero are matched through its hash
+// table when the values agree as well. The rest go to pairOffEntries as key/value slot
+// pairs. When the key is held but the values disagree, map2's entry goes in too: a
+// structurally equal key elsewhere may carry each value, as in
+// Map([[k, 1], [{...k}, 2]]) against Map([[k, 2], [{...k}, 1]]).
+template<bool isStrict, bool enableAsymmetricMatchers, bool checkPrototypes, bool skipPrototypeIdentity>
+static bool mapContentsEqual(JSC::JSGlobalObject* globalObject, MarkedArgumentBuffer& gcBuffer, Vector<std::pair<JSC::JSValue, JSC::JSValue>, 16>& stack, ThrowScope& scope, JSMap* map1, JSMap* map2)
+{
+    VM& vm = globalObject->vm();
+    if (map1->size() != map2->size()) {
+        return false;
+    }
+
+    MarkedArgumentBuffer unmatched1;
+    MarkedArgumentBuffer unmatched2;
+    {
+        auto iter = JSMapIterator::create(vm, globalObject->mapIteratorStructure(), map1, IterationKind::Entries);
+        JSValue key, value1;
+        while (iter->nextKeyValue(globalObject, key, value1)) {
+            JSValue value2 = map2->get(globalObject, key);
+            RETURN_IF_EXCEPTION(scope, false);
+            bool has = true;
+            if (value2.isUndefined()) {
+                has = map2->has(globalObject, key);
+                RETURN_IF_EXCEPTION(scope, false);
+            }
+            if (has) {
+                bool valuesEqual = Bun__deepEquals<isStrict, enableAsymmetricMatchers, checkPrototypes, skipPrototypeIdentity>(globalObject, value1, value2, gcBuffer, stack, scope, true);
+                RETURN_IF_EXCEPTION(scope, false);
+                if (valuesEqual) {
+                    continue;
+                }
+            }
+            if constexpr (!enableAsymmetricMatchers) {
+                // Only an asymmetric matcher could equal a primitive key, and map2's own
+                // entry for it (if any) was just rejected.
+                if (key.isPrimitive()) {
+                    return false;
+                }
+            }
+            unmatched1.appendWithCrashOnOverflow(key);
+            unmatched1.appendWithCrashOnOverflow(value1);
+            if (has) {
+                unmatched2.appendWithCrashOnOverflow(key);
+                unmatched2.appendWithCrashOnOverflow(value2);
+            }
+        }
+    }
+    if (unmatched1.isEmpty()) {
+        return true;
+    }
+
+    // Every key map1 holds was dealt with above, whether or not the values agreed.
+    {
+        auto iter = JSMapIterator::create(vm, globalObject->mapIteratorStructure(), map2, IterationKind::Entries);
+        JSValue key, value;
+        while (iter->nextKeyValue(globalObject, key, value)) {
+            bool has = map1->has(globalObject, key);
+            RETURN_IF_EXCEPTION(scope, false);
+            if (has) {
+                continue;
+            }
+            unmatched2.appendWithCrashOnOverflow(key);
+            unmatched2.appendWithCrashOnOverflow(value);
+        }
+    }
+    if (unmatched1.size() != unmatched2.size()) {
+        return false;
+    }
+
+    return pairOffEntries<isStrict, enableAsymmetricMatchers, checkPrototypes, skipPrototypeIdentity, true>(globalObject, gcBuffer, stack, scope, unmatched1, unmatched2);
+}
+
 template<bool isStrict, bool enableAsymmetricMatchers, bool checkPrototypes, bool skipPrototypeIdentity>
 std::optional<bool> specialObjectsDequal(JSC::JSGlobalObject* globalObject, MarkedArgumentBuffer& gcBuffer, Vector<std::pair<JSC::JSValue, JSC::JSValue>, 16>& stack, ThrowScope& scope, JSCell* _Nonnull c1, JSCell* _Nonnull c2)
 {
-    VM& vm = globalObject->vm();
     uint8_t c1Type = c1->type();
     uint8_t c2Type = c2->type();
 
@@ -1253,41 +1494,10 @@ std::optional<bool> specialObjectsDequal(JSC::JSGlobalObject* globalObject, Mark
             return false;
         }
 
-        JSSet* set1 = uncheckedDowncast<JSSet>(c1);
-        JSSet* set2 = uncheckedDowncast<JSSet>(c2);
-
-        if (set1->size() != set2->size()) {
-            return false;
-        }
-
-        auto iter1 = JSSetIterator::create(vm, globalObject->setIteratorStructure(), set1, IterationKind::Keys);
+        bool contentsEqual = setContentsEqual<isStrict, enableAsymmetricMatchers, checkPrototypes, skipPrototypeIdentity>(globalObject, gcBuffer, stack, scope, uncheckedDowncast<JSSet>(c1), uncheckedDowncast<JSSet>(c2));
         RETURN_IF_EXCEPTION(scope, {});
-        JSValue key1;
-        while (iter1->next(globalObject, key1)) {
-            bool has = set2->has(globalObject, key1);
-            RETURN_IF_EXCEPTION(scope, {});
-            if (has) {
-                continue;
-            }
-
-            // We couldn't find the key in the second set. This may be a false positive due to how
-            // JSValues are represented in JSC, so we need to fall back to a linear search to be sure.
-            auto iter2 = JSSetIterator::create(vm, globalObject->setIteratorStructure(), set2, IterationKind::Keys);
-            RETURN_IF_EXCEPTION(scope, {});
-            JSValue key2;
-            bool foundMatchingKey = false;
-            while (iter2->next(globalObject, key2)) {
-                bool equal = Bun__deepEquals<isStrict, enableAsymmetricMatchers, checkPrototypes, skipPrototypeIdentity>(globalObject, key1, key2, gcBuffer, stack, scope, false);
-                RETURN_IF_EXCEPTION(scope, {});
-                if (equal) {
-                    foundMatchingKey = true;
-                    break;
-                }
-            }
-
-            if (!foundMatchingKey) {
-                return false;
-            }
+        if (!contentsEqual) {
+            return false;
         }
 
         if constexpr (checkPrototypes) {
@@ -1301,49 +1511,10 @@ std::optional<bool> specialObjectsDequal(JSC::JSGlobalObject* globalObject, Mark
             return false;
         }
 
-        JSMap* map1 = uncheckedDowncast<JSMap>(c1);
-        JSMap* map2 = uncheckedDowncast<JSMap>(c2);
-        size_t leftSize = map1->size();
-
-        if (leftSize != map2->size()) {
-            return false;
-        }
-
-        auto iter1 = JSMapIterator::create(vm, globalObject->mapIteratorStructure(), map1, IterationKind::Entries);
+        bool contentsEqual = mapContentsEqual<isStrict, enableAsymmetricMatchers, checkPrototypes, skipPrototypeIdentity>(globalObject, gcBuffer, stack, scope, uncheckedDowncast<JSMap>(c1), uncheckedDowncast<JSMap>(c2));
         RETURN_IF_EXCEPTION(scope, {});
-        JSValue key1, value1;
-        while (iter1->nextKeyValue(globalObject, key1, value1)) {
-            JSValue value2 = map2->get(globalObject, key1);
-            RETURN_IF_EXCEPTION(scope, {});
-            if (value2.isUndefined()) {
-                // We couldn't find the key in the second map. This may be a false positive due to
-                // how JSValues are represented in JSC, so we need to fall back to a linear search
-                // to be sure.
-                auto iter2 = JSMapIterator::create(vm, globalObject->mapIteratorStructure(), map2, IterationKind::Entries);
-                RETURN_IF_EXCEPTION(scope, {});
-                JSValue key2;
-                bool foundMatchingKey = false;
-                while (iter2->nextKeyValue(globalObject, key2, value2)) {
-                    bool keysEqual = Bun__deepEquals<isStrict, enableAsymmetricMatchers, checkPrototypes, skipPrototypeIdentity>(globalObject, key1, key2, gcBuffer, stack, scope, false);
-                    RETURN_IF_EXCEPTION(scope, {});
-                    if (keysEqual) {
-                        foundMatchingKey = true;
-                        break;
-                    }
-                }
-
-                if (!foundMatchingKey) {
-                    return false;
-                }
-
-                // Compare both values below.
-            }
-
-            bool valuesEqual = Bun__deepEquals<isStrict, enableAsymmetricMatchers, checkPrototypes, skipPrototypeIdentity>(globalObject, value1, value2, gcBuffer, stack, scope, false);
-            RETURN_IF_EXCEPTION(scope, {});
-            if (!valuesEqual) {
-                return false;
-            }
+        if (!contentsEqual) {
+            return false;
         }
 
         if constexpr (checkPrototypes) {
