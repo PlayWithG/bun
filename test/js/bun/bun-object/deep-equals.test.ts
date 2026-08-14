@@ -259,29 +259,29 @@ describe("Set and Map entries without an identical counterpart", () => {
     });
   });
 
-  describe("asymmetric matchers", () => {
+  describe.each(Object.entries(expectEntryPoints))("%s with asymmetric matchers", (_, check) => {
     it("a member taken by a matcher can still satisfy a later member", () => {
       // {a:1} takes expect.anything() first; the concrete {a:1} is left for {a:2}.
-      expect(set({ a: 1 }, { a: 2 })).toEqual(set(expect.anything(), { a: 1 }));
-      expect(set(expect.anything(), { a: 1 })).toEqual(set({ a: 1 }, { a: 2 }));
+      check(set({ a: 1 }, { a: 2 }), set(expect.anything(), { a: 1 }), true);
+      check(set(expect.anything(), { a: 1 }), set({ a: 1 }, { a: 2 }), true);
     });
 
     it("overlapping matchers", () => {
-      const received = () => set({ type: "a", id: 1 }, { type: "a", id: 2 });
-      expect(received()).toEqual(set(expect.objectContaining({ type: "a" }), expect.objectContaining({ id: 1 })));
-      expect(received()).not.toEqual(set(expect.objectContaining({ type: "a" }), expect.objectContaining({ id: 3 })));
+      const received = set({ type: "a", id: 1 }, { type: "a", id: 2 });
+      check(received, set(expect.objectContaining({ type: "a" }), expect.objectContaining({ id: 1 })), true);
+      check(received, set(expect.objectContaining({ type: "a" }), expect.objectContaining({ id: 3 })), false);
     });
 
     it("a Map entry is matched on key and value, so a matcher key can carry a different value", () => {
-      const received = () => map([{ a: 1 }, "x"], [{ a: 2 }, "y"]);
-      expect(received()).toEqual(map([expect.anything(), "y"], [{ a: 1 }, "x"]));
-      expect(received()).not.toEqual(map([expect.anything(), "z"], [{ a: 1 }, "x"]));
+      const received = map([{ a: 1 }, "x"], [{ a: 2 }, "y"]);
+      check(received, map([expect.anything(), "y"], [{ a: 1 }, "x"]), true);
+      check(received, map([expect.anything(), "z"], [{ a: 1 }, "x"]), false);
     });
 
     it("matchers in the values of object-keyed entries", () => {
-      const received = () => map([{ k: 1 }, 5], [{ k: 2 }, "s"]);
-      expect(received()).toEqual(map([{ k: 2 }, expect.any(String)], [{ k: 1 }, expect.any(Number)]));
-      expect(received()).not.toEqual(map([{ k: 2 }, expect.any(Number)], [{ k: 1 }, expect.any(Number)]));
+      const received = map([{ k: 1 }, 5], [{ k: 2 }, "s"]);
+      check(received, map([{ k: 2 }, expect.any(String)], [{ k: 1 }, expect.any(Number)]), true);
+      check(received, map([{ k: 2 }, expect.any(Number)], [{ k: 1 }, expect.any(Number)]), false);
     });
   });
 

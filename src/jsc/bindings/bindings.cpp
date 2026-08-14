@@ -1240,9 +1240,7 @@ static std::optional<bool> temporalObjectsDequal(JSC::JSObject* o1, JSC::JSObjec
     return std::nullopt;
 }
 
-// Every `left` entry (a Set member, or the key and value slots of a Map entry) has to take a
-// distinct structurally equal `right` entry. An asymmetric matcher equals several entries, so
-// with matchers an entry that takes nothing is still accepted if it has some counterpart, as in Jest.
+// Each left entry takes a distinct equal right entry; with matchers (which equal several entries) one that takes nothing still passes if it has some counterpart, as in Jest.
 template<bool isStrict, bool enableAsymmetricMatchers, bool checkPrototypes, bool skipPrototypeIdentity, bool entriesHaveValues, typename LeftEntryHasCounterpart, typename RightEntryHasCounterpart>
 static bool pairOffEntries(JSC::JSGlobalObject* globalObject, MarkedArgumentBuffer& gcBuffer, Vector<std::pair<JSC::JSValue, JSC::JSValue>, 16>& stack, ThrowScope& scope, const MarkedArgumentBuffer& left, const MarkedArgumentBuffer& right, const LeftEntryHasCounterpart& leftEntryHasCounterpart, const RightEntryHasCounterpart& rightEntryHasCounterpart)
 {
