@@ -3716,6 +3716,12 @@ impl VirtualMachine {
 
         if self.hot_reload_deferred {
             self.reload(None);
+            if !self.hot_reload_deferred {
+                // Unlike a reload run as a task, nothing after this drains the
+                // module loader's microtasks or stops the loop parking first.
+                self.drain_microtasks();
+                self.wakeup();
+            }
         }
         self.add_main_to_watcher_if_needed();
     }
