@@ -81,12 +81,8 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
         // `take` so the old value is moved out before we overwrite the field.
         let old_fn_or_arrow_data = self.fn_or_arrow_data_visit;
         let old_fn_only_data = core::mem::take(&mut self.fn_only_data_visit);
-        // Reset `fold_numeric_constants_unconditionally` across function
-        // boundaries: callers that force-fold (enum body, macro/require
-        // args, const initializer for inlining) want the override only for
-        // the immediate initializer expression, not for any nested function
-        // body's arithmetic — which runs at call time under the normal
-        // size-aware gate.
+        // Force-fold applies to the immediate initializer only, not to a
+        // nested function body that runs at call time.
         let old_fold_numeric_constants_unconditionally =
             self.fold_numeric_constants_unconditionally;
         self.fold_numeric_constants_unconditionally = false;
@@ -327,12 +323,9 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                     self.react_compiler_candidate_name = Some(id.r#ref);
                     self.react_compiler_in_react_hoc = in_hoc;
                 }
-                // For a const decl that could become a const_values entry
-                // (inlining on), force numeric arithmetic to fold in the
-                // initializer. Otherwise `const RATIO = 16/9` stays as
-                // `E::Binary`, `can_be_const_value` returns false, the ref
-                // is never registered, and cross-statement inlining / DCE
-                // that depended on it silently stops working.
+                // An unfolded `E::Binary` initializer fails
+                // `can_be_const_value`, which would silently disable
+                // const-value inlining and the DCE that depends on it.
                 let want_unconditional_numeric_fold = was_const
                     && !self.vis_scope().is_after_const_local_prefix
                     && self.options.features.inlining
@@ -809,14 +802,8 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
             "only_scan_imports_and_do_not_visit must not run this."
         );
 
-        // Reset `fold_numeric_constants_unconditionally` across the class
-        // boundary: class-level TS decorators, the `extends` clause, and
-        // the class body (field initializers, static blocks) visit through
-        // `p.visit_expr`/`p.visit_stmts` directly without routing through
-        // `visit_func` or the arrow visitor, so a caller that force-folded
-        // for the enclosing decl would otherwise leak into any of those
-        // contexts. `can_be_const_value` rejects `.e_class` anyway, so the
-        // force-fold buys nothing here.
+        // Decorators, `extends`, and the class body visit without routing
+        // through `visit_func`, so reset the force-fold here too.
         let old_fold_numeric_constants_unconditionally =
             self.fold_numeric_constants_unconditionally;
         self.fold_numeric_constants_unconditionally = false;

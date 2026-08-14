@@ -2486,12 +2486,9 @@ macro_rules! impl_digit_count_signed {
 impl_digit_count_unsigned!(u8, u16, u32, u64, usize);
 impl_digit_count_signed!(i8, i16, i32, i64, isize);
 
-/// Byte length the JS printer's `print_non_negative_float` would emit for
-/// `value`, plus one extra byte for the leading `-` when `value` is
-/// negative. Mirrors the special cases in that printer (e.g. `1e4` instead
-/// of `10000`) so size-aware constant-folding comparisons line up with the
-/// actual output. Lives here (not in `bun_js_printer`) because
-/// `bun_js_parser` needs it and can't take a circular dep on the printer.
+/// Byte length of `print_non_negative_float`'s output for `value` (plus a
+/// leading `-` byte when negative), mirroring that printer's special cases.
+/// Lives here because `bun_js_parser` can't depend on the printer crate.
 pub fn len_of_js_number(value: f64) -> u32 {
     if value.is_nan() {
         return 3; // "NaN"
@@ -2507,8 +2504,7 @@ pub fn len_of_js_number(value: f64) -> u32 {
     let is_integer = (abs_value - floored) == 0.0;
     if abs_value < (u64::MAX >> 12) as f64 /* maxInt(u52) */ && is_integer {
         let val = abs_value as u64;
-        // Powers of ten from 10^4..10^9 print as `1eN` (3 bytes) instead
-        // of their decimal form — see `print_non_negative_float`.
+        // 10^4..10^9 print as `1eN` (3 bytes).
         let int_len: u32 = match val {
             10_000 | 100_000 | 1_000_000 | 10_000_000 | 100_000_000 | 1_000_000_000 => 3,
             _ => digit_count_u64(val) as u32,
@@ -2516,8 +2512,8 @@ pub fn len_of_js_number(value: f64) -> u32 {
         return neg_prefix + int_len;
     }
 
-    // Rust's `{}` formatter for f64 uses the shortest round-trip decimal
-    // form (like Zig's `{d}`), matching the printer's float fallback.
+    // `{}` on f64 is the shortest round-trip form, same as the printer's
+    // float fallback.
     neg_prefix + count_float(abs_value) as u32
 }
 

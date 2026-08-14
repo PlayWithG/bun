@@ -339,21 +339,11 @@ impl SideEffects {
                         }
                     }
 
-                    // Arithmetic between two numeric literals (or inlined
-                    // enum numbers) has no `valueOf`/`toString` side
-                    // effects and cannot throw, so it's safe to drop when
-                    // unused. Pre-size-aware folding every such node was
-                    // folded to `.e_number` before reaching here; now
-                    // rejected folds survive as `.e_binary` and without
-                    // this arm an unused `1/3;` would be kept.
-                    //
-                    // Uses the non-recursive `extract_numeric_values`, not
-                    // `known_primitive`, whose recursion through `.bin_add`
-                    // would stack-overflow on a million-deep `a+a+a+…`
-                    // chain. For `.e_number`/inlined-enum operands
-                    // `simplify_unused_expr` is already a plain `None`
-                    // return (literal fast-path above), so no recursion is
-                    // needed.
+                    // Size-aware folding can leave literal arithmetic as
+                    // `.e_binary`; it is side-effect-free, so drop it when
+                    // unused. `extract_numeric_values` is non-recursive on
+                    // purpose: `known_primitive` recursion overflows on a
+                    // deep `a+a+a+…`.
                     Op::Code::BinAdd
                     | Op::Code::BinSub
                     | Op::Code::BinMul

@@ -11,19 +11,11 @@ use bun_ast::{
     expr::{Equality, LooseEql, StrictEql},
 };
 
-/// Should numeric arithmetic be folded given `folded_value = left op right`?
-///
-/// Always true inside TypeScript enum bodies (`tsc` computes enum values
-/// eagerly and subsequent members can depend on prior numeric members).
-/// Otherwise, when `minify_syntax` is on, only fold when the printed literal
-/// is no longer than the source expression — folding `1/3` into
-/// `0.3333333333333333` would inflate the output.
-///
-/// `op_len` is the byte length of the operator as printed (1 for `+`, `-`,
-/// `*`, `/`, `%`; 2 for `**`). When `minify_whitespace` is off the printer
-/// emits a space on either side of a binary operator, so we add 2 to the
-/// source-length model to match the actual output. Unary `-` on a negative
-/// operand is already folded into its `len_of_js_number`.
+/// Under `minify_syntax`, fold `left op right` only when the folded literal
+/// prints no longer than the source (`1/3` beats `0.3333333333333333`);
+/// `fold_numeric_constants_unconditionally` bypasses the check. `op_len` is
+/// the printed operator width (2 for `**`, else 1); without
+/// `minify_whitespace` the printer spaces the operator, hence `space_len`.
 fn should_fold_arithmetic<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool>(
     p: &P<'a, TYPESCRIPT, SCAN_ONLY>,
     folded_value: f64,

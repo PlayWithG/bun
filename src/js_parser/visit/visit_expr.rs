@@ -1807,9 +1807,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
             p.should_fold_typescript_constant_expressions;
         let prev_fold_numeric_constants_unconditionally = p.fold_numeric_constants_unconditionally;
         p.should_fold_typescript_constant_expressions = true;
-        // Import path arithmetic (rare but legal: `import("./a" + 1)`) must
-        // reach the module resolver as a string, not a size-preserved
-        // `E::Binary` that the transposer can't interpret.
+        // The transposer needs a fully folded import path, e.g. `import("./a" + 1)`.
         p.fold_numeric_constants_unconditionally = true;
 
         p.visit_expr(&mut e_.expr);
@@ -1968,10 +1966,8 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
             {
                 p.options.ignore_dce_annotations = true;
                 p.should_fold_typescript_constant_expressions = true;
-                // These callers consume the arg as a concrete value (macros
-                // feed Expr→JSValue conversion; require/import feed the
-                // module resolver as a string). A size-preserved `E::Binary`
-                // breaks both — always fold here.
+                // Macro args and require/import paths are consumed as
+                // concrete values; an unfolded `E::Binary` breaks both.
                 p.fold_numeric_constants_unconditionally = true;
             }
 
@@ -2453,10 +2449,8 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
         p.fn_only_data_visit.is_inside_async_arrow_fn =
             e_.is_async || p.fn_only_data_visit.is_inside_async_arrow_fn;
 
-        // Callers that force-fold (enum body, macro/require args, const-decl
-        // inlining) want that override for the immediate initializer only,
-        // not for arithmetic inside a nested arrow body that runs at call
-        // time under the normal size-aware gate.
+        // Force-fold applies to the immediate initializer only, not to an
+        // arrow body that runs at call time.
         let old_fold_numeric_constants_unconditionally = p.fold_numeric_constants_unconditionally;
         p.fold_numeric_constants_unconditionally = false;
 

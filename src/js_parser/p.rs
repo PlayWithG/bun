@@ -341,13 +341,9 @@ pub struct P<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> {
     /// we always fold constant expressions.
     pub(crate) should_fold_typescript_constant_expressions: bool,
 
-    /// When set, numeric binary arithmetic folds unconditionally even if
-    /// the folded literal would print larger than the source expression.
-    /// Used inside TypeScript enum bodies so the emitted enum table has
-    /// fully computed numeric values (matching `tsc`), and so subsequent
-    /// enum members that reference prior members can resolve to a number.
-    /// Outside this flag, arithmetic folding under `minify_syntax` only
-    /// happens when the folded literal is no longer than the source.
+    /// Fold numeric arithmetic even when the folded literal prints larger
+    /// than the source. Set where a later consumer needs a concrete number:
+    /// enum bodies, macro/require args, const initializers under inlining.
     pub(crate) fold_numeric_constants_unconditionally: bool,
 
     pub(crate) emitted_namespace_vars: RefMap,
@@ -5703,20 +5699,10 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                         _ => {}
                     }
                 }
-                // Arithmetic between two numeric literals (or inlined enum
-                // numbers) has no `valueOf`/`toString` side effects and
-                // cannot throw — removable when both sides are. Pre-size-
-                // aware folding every such node was folded to `.e_number`
-                // before reaching here; with size-aware folding the
-                // `.e_binary` survives and without this arm an unused
-                // `export class C { ratio = 1/3 }` no longer tree-shakes.
-                //
-                // Uses the non-recursive `extract_numeric_values` rather
-                // than `known_primitive`, whose recursion through
-                // `.bin_add` would stack-overflow on a million-deep
-                // `a+a+a+…` chain. For `.e_number`/inlined-enum operands
-                // the literal fast-path at the top of this fn returns true
-                // directly, so no recursion is needed.
+                // Size-aware folding can leave literal arithmetic as
+                // `.e_binary`; it is side-effect-free, so keep it removable.
+                // `extract_numeric_values` is non-recursive on purpose:
+                // `known_primitive` recursion overflows on a deep `a+a+a+…`.
                 js_ast::op::Code::BinAdd
                 | js_ast::op::Code::BinSub
                 | js_ast::op::Code::BinMul
