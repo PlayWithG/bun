@@ -1240,25 +1240,32 @@ static std::optional<bool> temporalObjectsDequal(JSC::JSObject* o1, JSC::JSObjec
     return std::nullopt;
 }
 
+// Entries take one slot each (Set members) or two (a Map entry's key and value).
+template<bool isStrict, bool enableAsymmetricMatchers, bool checkPrototypes, bool skipPrototypeIdentity, bool entriesHaveValues>
+static bool entryPairEqual(JSC::JSGlobalObject* globalObject, MarkedArgumentBuffer& gcBuffer, Vector<std::pair<JSC::JSValue, JSC::JSValue>, 16>& stack, ThrowScope& scope, const MarkedArgumentBuffer& left, size_t leftIndex, const MarkedArgumentBuffer& right, size_t rightIndex)
+{
+    constexpr size_t slotsPerEntry = entriesHaveValues ? 2 : 1;
+    size_t l = leftIndex * slotsPerEntry;
+    size_t r = rightIndex * slotsPerEntry;
+    bool equal = Bun__deepEquals<isStrict, enableAsymmetricMatchers, checkPrototypes, skipPrototypeIdentity>(globalObject, left.at(l), right.at(r), gcBuffer, stack, scope, true);
+    if constexpr (entriesHaveValues) {
+        RETURN_IF_EXCEPTION(scope, false);
+        if (!equal)
+            return false;
+        equal = Bun__deepEquals<isStrict, enableAsymmetricMatchers, checkPrototypes, skipPrototypeIdentity>(globalObject, left.at(l + 1), right.at(r + 1), gcBuffer, stack, scope, true);
+    }
+    return equal;
+}
+
 // Each left entry takes a distinct equal right entry; with matchers (which equal several entries) one that takes nothing still passes if it has some counterpart, as in Jest.
 template<bool isStrict, bool enableAsymmetricMatchers, bool checkPrototypes, bool skipPrototypeIdentity, bool entriesHaveValues, typename LeftEntryHasCounterpart, typename RightEntryHasCounterpart>
 static bool pairOffEntries(JSC::JSGlobalObject* globalObject, MarkedArgumentBuffer& gcBuffer, Vector<std::pair<JSC::JSValue, JSC::JSValue>, 16>& stack, ThrowScope& scope, const MarkedArgumentBuffer& left, const MarkedArgumentBuffer& right, const LeftEntryHasCounterpart& leftEntryHasCounterpart, const RightEntryHasCounterpart& rightEntryHasCounterpart)
 {
-    constexpr size_t slotsPerEntry = entriesHaveValues ? 2 : 1;
     ASSERT(left.size() == right.size());
-    const size_t count = left.size() / slotsPerEntry;
+    const size_t count = left.size() / (entriesHaveValues ? 2 : 1);
 
-    auto entriesEqual = [&](size_t leftIndex, size_t rightIndex) -> bool {
-        size_t l = leftIndex * slotsPerEntry;
-        size_t r = rightIndex * slotsPerEntry;
-        bool equal = Bun__deepEquals<isStrict, enableAsymmetricMatchers, checkPrototypes, skipPrototypeIdentity>(globalObject, left.at(l), right.at(r), gcBuffer, stack, scope, true);
-        if constexpr (entriesHaveValues) {
-            RETURN_IF_EXCEPTION(scope, false);
-            if (!equal)
-                return false;
-            equal = Bun__deepEquals<isStrict, enableAsymmetricMatchers, checkPrototypes, skipPrototypeIdentity>(globalObject, left.at(l + 1), right.at(r + 1), gcBuffer, stack, scope, true);
-        }
-        return equal;
+    auto entriesEqual = [&](size_t leftIndex, size_t rightIndex) {
+        return entryPairEqual<isStrict, enableAsymmetricMatchers, checkPrototypes, skipPrototypeIdentity, entriesHaveValues>(globalObject, gcBuffer, stack, scope, left, leftIndex, right, rightIndex);
     };
 
     // Indices of the right entries not taken yet live in open[start, end).
@@ -1339,6 +1346,7 @@ template<bool isStrict, bool enableAsymmetricMatchers, bool checkPrototypes, boo
 static bool setHasCounterpart(JSC::JSGlobalObject* globalObject, MarkedArgumentBuffer& gcBuffer, Vector<std::pair<JSC::JSValue, JSC::JSValue>, 16>& stack, ThrowScope& scope, JSValue member, bool memberIsFromSet1, JSSet* otherSet)
 {
     auto iter = JSSetIterator::create(globalObject->vm(), globalObject->setIteratorStructure(), otherSet, IterationKind::Keys);
+    RETURN_IF_EXCEPTION(scope, false);
     JSValue candidate;
     while (iter->next(globalObject, candidate)) {
         bool equal = memberIsFromSet1
@@ -1356,6 +1364,7 @@ template<bool isStrict, bool enableAsymmetricMatchers, bool checkPrototypes, boo
 static bool mapHasCounterpart(JSC::JSGlobalObject* globalObject, MarkedArgumentBuffer& gcBuffer, Vector<std::pair<JSC::JSValue, JSC::JSValue>, 16>& stack, ThrowScope& scope, JSValue key, JSValue value, bool entryIsFromMap1, JSMap* otherMap)
 {
     auto iter = JSMapIterator::create(globalObject->vm(), globalObject->mapIteratorStructure(), otherMap, IterationKind::Entries);
+    RETURN_IF_EXCEPTION(scope, false);
     JSValue candidateKey, candidateValue;
     while (iter->nextKeyValue(globalObject, candidateKey, candidateValue)) {
         bool equal = entryIsFromMap1
@@ -1388,6 +1397,7 @@ static bool setContentsEqual(JSC::JSGlobalObject* globalObject, MarkedArgumentBu
     MarkedArgumentBuffer unmatched1;
     {
         auto iter = JSSetIterator::create(vm, globalObject->setIteratorStructure(), set1, IterationKind::Keys);
+        RETURN_IF_EXCEPTION(scope, false);
         JSValue key;
         while (iter->next(globalObject, key)) {
             bool has = set2->has(globalObject, key);
@@ -1411,6 +1421,7 @@ static bool setContentsEqual(JSC::JSGlobalObject* globalObject, MarkedArgumentBu
     MarkedArgumentBuffer unmatched2;
     {
         auto iter = JSSetIterator::create(vm, globalObject->setIteratorStructure(), set2, IterationKind::Keys);
+        RETURN_IF_EXCEPTION(scope, false);
         JSValue key;
         while (iter->next(globalObject, key)) {
             bool has = set1->has(globalObject, key);
@@ -1443,6 +1454,7 @@ static bool mapContentsEqual(JSC::JSGlobalObject* globalObject, MarkedArgumentBu
     MarkedArgumentBuffer unmatched2;
     {
         auto iter = JSMapIterator::create(vm, globalObject->mapIteratorStructure(), map1, IterationKind::Entries);
+        RETURN_IF_EXCEPTION(scope, false);
         JSValue key, value1;
         while (iter->nextKeyValue(globalObject, key, value1)) {
             JSValue value2 = map2->get(globalObject, key);
@@ -1481,6 +1493,7 @@ static bool mapContentsEqual(JSC::JSGlobalObject* globalObject, MarkedArgumentBu
     // Every key map1 holds was dealt with above, whether or not the values agreed.
     {
         auto iter = JSMapIterator::create(vm, globalObject->mapIteratorStructure(), map2, IterationKind::Entries);
+        RETURN_IF_EXCEPTION(scope, false);
         JSValue key, value;
         while (iter->nextKeyValue(globalObject, key, value)) {
             bool has = map1->has(globalObject, key);
