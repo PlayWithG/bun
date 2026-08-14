@@ -2504,10 +2504,11 @@ pub fn len_of_js_number(value: f64) -> u32 {
     let is_integer = (abs_value - floored) == 0.0;
     if abs_value < (u64::MAX >> 12) as f64 /* maxInt(u52) */ && is_integer {
         let val = abs_value as u64;
-        // 10^4..10^9 print as `1eN` (3 bytes).
-        let int_len: u32 = match val {
-            10_000 | 100_000 | 1_000_000 | 10_000_000 | 100_000_000 | 1_000_000_000 => 3,
-            _ => digit_count_u64(val) as u32,
+        // The printer emits `1eN` (3 bytes) for these powers of ten.
+        let int_len: u32 = if pow10_exp_1e4_to_1e9(val).is_some() {
+            3
+        } else {
+            digit_count_u64(val) as u32
         };
         return neg_prefix + int_len;
     }
