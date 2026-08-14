@@ -218,8 +218,7 @@ pub struct P<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> {
     pub(crate) has_top_level_return: bool,
     pub(crate) latest_return_had_semicolon: bool,
     pub(crate) has_import_meta: bool,
-    /// Set when `import.meta.hot` is visited, i.e. when `runtime_hot` changed
-    /// (or would have changed) this file's output.
+    /// Set where `import.meta.hot` is folded, the one place `runtime_hot` affects output.
     pub(crate) has_import_meta_hot: bool,
     pub(crate) has_es_module_syntax: bool,
     pub(crate) top_level_await_keyword: bun_ast::Range,
