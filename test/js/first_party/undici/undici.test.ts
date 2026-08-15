@@ -422,6 +422,25 @@ describe("undici dispatcher connect.lookup", () => {
     ).toBe("NotSupportedError");
   });
 
+  it("URLs without a network authority skip the hook", async () => {
+    const { agent, seen } = pinningAgent();
+    const res = await undiciFetch("data:text/plain,hello", { dispatcher: agent });
+    expect(await res.text()).toBe("hello");
+    expect(seen).toEqual([]);
+  });
+
+  it("a connect object without a lookup hook keeps native redirect following", async () => {
+    await using target = Bun.serve({ port: 0, fetch: () => new Response("followed") });
+    await using origin = Bun.serve({
+      port: 0,
+      fetch: () => Response.redirect(`http://127.0.0.1:${target.port}/`, 302),
+    });
+    const agent = new Agent({ connect: { timeout: 5000 } });
+    const res = await undiciFetch(`http://127.0.0.1:${origin.port}/`, { dispatcher: agent });
+    expect(await res.text()).toBe("followed");
+    expect(res.redirected).toBe(true);
+  });
+
   it("an Agent without connect options leaves requests untouched", async () => {
     await using server = Bun.serve({ port: 0, fetch: () => new Response("plain") });
     const res = await undiciFetch(`http://127.0.0.1:${server.port}/`, { dispatcher: new Agent() });

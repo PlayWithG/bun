@@ -70,6 +70,9 @@ function runLookup(lookup, hostname, connect) {
 // authority, sent as the Host header; native fetch also takes SNI and
 // certificate verification from it, so HTTPS still verifies the real hostname.
 async function applyConnect(url, connect) {
+  const { protocol } = url;
+  // Only http(s) opens a socket; data:, blob:, file: never consult the connector.
+  if (protocol !== "http:" && protocol !== "https:") return undefined;
   if (typeof connect === "function") {
     throw new NotSupportedError("custom connect functions are not supported in Bun's undici compatibility layer");
   }
@@ -198,7 +201,11 @@ async function fetchWithConnect(input, init, connect) {
 function fetch(input, init) {
   try {
     const connect = resolveConnect(init?.dispatcher);
-    if (connect == null) return nativeFetch(input, init);
+    // Take over only when there is connect behaviour to apply (a lookup hook,
+    // or a custom connector to reject); otherwise stay on the native path.
+    if (connect == null || (typeof connect !== "function" && typeof connect.lookup !== "function")) {
+      return nativeFetch(input, init);
+    }
     return fetchWithConnect(input, init, connect);
   } catch (e) {
     return Promise.$reject(e);
