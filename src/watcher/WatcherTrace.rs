@@ -6,9 +6,7 @@ use bun_threading::Guarded;
 
 use crate::watcher_impl::{ChangedFilePath, WatchEvent, WatchList};
 
-/// Optional trace file for debugging watcher events. Shared by every watcher
-/// in the process (each batch is flushed as it is written), so it stays open
-/// until exit rather than being closed by whichever watcher exits first.
+/// Shared by every watcher in the process; flushed on every write, so it stays open until exit.
 static TRACE_FILE: Guarded<Option<File>> = Guarded::new(None);
 
 /// Initialize trace file if BUN_WATCHER_TRACE env var is set.

@@ -49,8 +49,7 @@ impl KEventWatcher {
         }
     }
 
-    /// Called under `Watcher.mutex`, which `thread_body` takes before `stop()`,
-    /// so `fd` is still open here.
+    /// Runs under `Watcher.mutex`, which `thread_body` takes before `stop()`, so `fd` is open.
     pub(crate) fn wake(&self) {
         let _ = bun_sys::kevent(self.fd, &[wake_event(0, libc::NOTE_TRIGGER)], &mut [], None);
     }

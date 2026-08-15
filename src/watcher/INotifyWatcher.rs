@@ -245,8 +245,7 @@ impl INotifyWatcher {
             'outer: loop {
                 Futex::wait_forever(&self.watch_count, 0);
 
-                // Block here rather than in `read()` so `wake()` can interrupt
-                // the wait through `wake_fd`.
+                // Wait here rather than in `read()` so `wake_fd` can interrupt it.
                 let mut fds = [
                     system::pollfd {
                         fd: self.fd.native(),

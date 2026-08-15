@@ -21,8 +21,7 @@ pub struct WindowsWatcher {
     pub(crate) watcher: DirWatcher,
     pub(crate) buf: PathBuffer,
     pub(crate) base_idx: usize,
-    /// A read is outstanding on `watcher.overlapped`, so the kernel may still
-    /// write into `watcher` until its completion packet has been dequeued.
+    /// A read is outstanding: the kernel may write into `watcher` until its packet is dequeued.
     armed: bool,
 }
 
@@ -302,8 +301,7 @@ impl WindowsWatcher {
         Ok(())
     }
 
-    /// The previous read stays armed across `next()` calls that returned
-    /// nothing, so the single `overlapped`/`buf` is never handed to two reads.
+    /// An outstanding read is reused, so `overlapped`/`buf` are never handed to two reads.
     fn arm(&mut self) -> bun_sys::Result<()> {
         if !self.armed {
             self.watcher.prepare()?;
@@ -312,8 +310,7 @@ impl WindowsWatcher {
         Ok(())
     }
 
-    /// Every read started by `arm()` produces exactly one packet carrying
-    /// `watcher.overlapped`, whether it succeeded, failed, or was cancelled.
+    /// Every read started by `arm()` yields exactly one packet carrying `watcher.overlapped`.
     fn dequeue(&mut self, timeout_ms: w::DWORD) -> Packet {
         let mut nbytes: w::DWORD = 0;
         let mut key: w::ULONG_PTR = 0;
@@ -373,11 +370,8 @@ impl WindowsWatcher {
                     return Err(win32_watch_error(err));
                 }
                 Packet::Ours { nbytes: 0, .. } => {
-                    // Per MSDN a successful zero-byte completion means the kernel's
-                    // change buffer overflowed (cancellation arrives as a failed packet
-                    // above). Re-arm instead of erroring out, or the --hot child
-                    // silently exits (hot.test.ts "should work with sourcemap
-                    // generation" flake).
+                    // Per MSDN a zero-byte success means the kernel's change buffer overflowed;
+                    // erroring out here made --hot exit silently (hot.test.ts sourcemap flake).
                     bun_core::scoped_log!(
                         watcher,
                         "ReadDirectoryChangesW buffer overflow (nbytes==0); re-arming"
@@ -398,9 +392,7 @@ impl WindowsWatcher {
 
     pub(crate) fn stop(&mut self) {
         if self.armed {
-            // The caller frees `watcher` right after this returns; `CancelIoEx`
-            // failing only means the read already completed and its packet is
-            // queued.
+            // The caller frees `watcher` next; if `CancelIoEx` fails the packet is already queued.
             // SAFETY: dir_handle is the open directory handle from init(); a
             // null OVERLAPPED cancels all I/O issued on it.
             let _ = unsafe { w::kernel32::CancelIoEx(self.watcher.dir_handle, ptr::null_mut()) };
@@ -423,8 +415,7 @@ impl WindowsWatcher {
         }
     }
 
-    /// Called under `Watcher.mutex`, which `thread_body` takes before `stop()`,
-    /// so `iocp` is still open here.
+    /// Runs under `Watcher.mutex`, which `thread_body` takes before `stop()`, so `iocp` is open.
     pub(crate) fn wake(&self) {
         // SAFETY: iocp is a live port; the packet carries no OVERLAPPED, which
         // `dequeue` reports as `Packet::Wake`.

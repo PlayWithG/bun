@@ -108,9 +108,7 @@ pub struct Watcher {
     // Storing the `top_level_dir` slice directly avoids a forward-decl
     // dependency on the higher-tier `bun_resolver::fs::FileSystem` type.
     // allocator field dropped — global mimalloc (see §Allocators)
-    /// Whether the watcher thread owns this allocation: set by `start()` before
-    /// spawning, cleared (under `mutex`) by `thread_body` when it hands the
-    /// allocation back after a watch error.
+    /// The thread owns the allocation: set by `start()`, cleared under `mutex` by `thread_body`.
     pub(crate) watchloop_handle: bun_core::AtomicCell<bool>,
     pub(crate) cwd: &'static [u8],
     /// Main thread clears this in `shutdown`; watcher thread polls it in
@@ -137,8 +135,7 @@ pub struct Watcher {
 
 impl Drop for Watcher {
     fn drop(&mut self) {
-        // `MultiArrayList` frees only its slab; the owned `WatchItem.file_path`s
-        // would otherwise leak.
+        // `MultiArrayList` frees only its slab, not the owned `file_path`s.
         self.watchlist.drop_elements();
     }
 }
@@ -260,8 +257,7 @@ impl Watcher {
             std::thread::sleep(std::time::Duration::from_millis(10));
             spawn().map_err(|_| first)
         });
-        // The thread is never joined (it frees the Watcher itself), so the
-        // JoinHandle is dropped here, which detaches it.
+        // Never joined (the thread frees the Watcher itself); dropping the handle detaches it.
         handle.map_err(|e| {
             self.watchloop_handle.store(false);
             // Windows: raw_os_error() is a Win32 GetLastError() code, so
@@ -317,8 +313,7 @@ impl Watcher {
     fn release(&mut self, close_descriptors: bool) {
         self.platform.stop();
         if close_descriptors {
-            // Entries added without an fd (plugin-loaded files, `add_file_by_path_slow`)
-            // hold `Fd::INVALID` on platforms that do not need one.
+            // Entries added without an fd (e.g. plugin-loaded files) hold `Fd::INVALID`.
             for &fd in self.watchlist.items_fd() {
                 if fd.is_valid() {
                     let _ = bun_sys::close(fd);
@@ -357,9 +352,7 @@ impl Watcher {
         Ok(())
     }
 
-    /// Returns `true` once ownership has been handed back to the owner, which
-    /// may free `self` as soon as the mutex is released; nothing may touch
-    /// `self` after that.
+    /// Returns `true` if ownership went back to the owner, which may free `self` once unlocked.
     fn thread_body(&mut self) -> bool {
         self.thread_lock.lock();
         Output::Source::configure_named_thread(zstr!("File Watcher"));
@@ -368,13 +361,11 @@ impl Watcher {
 
         let result = self.watch_loop();
 
-        // `watch_loop` can return while `shutdown()` is still inside its
-        // critical section; this orders `stop()` and the free after it.
+        // `shutdown()` may still hold the mutex; this orders `stop()` and the free after it.
         self.mutex.lock();
         if let Err(err) = result {
             if self.running.load() {
-                // Under the mutex (like `on_file_update`) so the owner is
-                // still alive for the duration of the callback.
+                // Under the mutex (like `on_file_update`) so the owner outlives the callback.
                 (self.on_error)(self.ctx, err);
                 self.watchloop_handle.store(false);
                 self.mutex.unlock();

@@ -36,14 +36,18 @@ test("tearing down a dev server also tears down its watcher thread", async () =>
   if (isLinux) {
     // Without the fix every dev server leaves one parked watcher thread and one
     // inotify instance behind: 20 for the listen failures and 5 for the served
-    // servers. The thread counts get a little slack for unrelated threads.
+    // servers. The deltas can dip below zero when a thread from an earlier
+    // teardown exits inside a measured window, and unrelated threads may
+    // appear, hence bounds rather than exact values.
     const result = JSON.parse(stdout.split("\n").find(line => line.startsWith("{"))!);
     expect(result).toEqual({
-      listenFail: { threads: expect.any(Number), inotify: 0 },
-      served: { threads: expect.any(Number), inotify: 0 },
+      listenFail: { threads: expect.any(Number), inotify: expect.any(Number) },
+      served: { threads: expect.any(Number), inotify: expect.any(Number) },
       survivorTraced: true,
     });
+    expect(result.listenFail.inotify).toBeLessThanOrEqual(0);
     expect(result.listenFail.threads).toBeLessThan(10);
+    expect(result.served.inotify).toBeLessThanOrEqual(0);
     expect(result.served.threads).toBeLessThan(3);
   }
 

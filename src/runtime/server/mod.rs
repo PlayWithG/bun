@@ -338,8 +338,7 @@ impl<const SSL: bool, const DEBUG: bool> Drop for NewServer<SSL, DEBUG> {
             // `ServePlugins::init`; this releases the server's counted ref.
             unsafe { ServePlugins::deref_(p.as_ptr()) };
         }
-        // Lives in the arena owned by `config.bake`, which the automatic field
-        // drops below would destroy first.
+        // Lives in the arena owned by `config.bake`, which the field drops below would free first.
         self.dev_server = None;
         // The remaining owned fields (config, base_url, h3_alt_svc,
         // user_routes, all_closed_promise) drop automatically.
