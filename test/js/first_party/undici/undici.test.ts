@@ -1,14 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import {
-  Agent,
-  errors,
-  fetch as undiciFetch,
-  getGlobalDispatcher,
-  request,
-  request as request,
-  setGlobalDispatcher,
-} from "undici";
 import { tls as tlsCert } from "harness";
+import { Agent, errors, getGlobalDispatcher, request, setGlobalDispatcher, fetch as undiciFetch } from "undici";
 
 import { createServer } from "../../../http-test-server";
 
