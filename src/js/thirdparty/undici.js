@@ -137,7 +137,10 @@ async function followRedirectsWithConnect(url, init, connect, opts) {
     }
     // A user-supplied Host header only applies to the original authority.
     headers.delete("host");
-    if ((status === 303 && method !== "GET" && method !== "HEAD") || ((status === 301 || status === 302) && method === "POST")) {
+    if (
+      (status === 303 && method !== "GET" && method !== "HEAD") ||
+      ((status === 301 || status === 302) && method === "POST")
+    ) {
       method = "GET";
       body = undefined;
       headers.delete("content-type");
@@ -179,7 +182,8 @@ async function fetchWithConnect(input, init, connect) {
   const headers = new Headers(init?.headers ?? (isRequest ? input.headers : undefined));
   const method = init?.method ?? (isRequest ? input.method : "GET");
   // Buffer a Request body so 307/308 hops can replay it.
-  const body = init?.body !== undefined ? init.body : isRequest && input.body != null ? await input.arrayBuffer() : undefined;
+  const body =
+    init?.body !== undefined ? init.body : isRequest && input.body != null ? await input.arrayBuffer() : undefined;
   const signal = init?.signal ?? (isRequest ? input.signal : undefined);
   return followRedirectsWithConnect(url, { ...init, signal }, connect, {
     method,
