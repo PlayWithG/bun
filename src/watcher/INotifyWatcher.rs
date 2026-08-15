@@ -40,6 +40,8 @@ pub(crate) type Platform = INotifyWatcher;
 
 pub struct INotifyWatcher {
     pub(crate) fd: Fd,
+    /// eventfd that `wake()` signals; `read()` polls it alongside `fd`.
+    wake_fd: Fd,
     pub(crate) loaded: bool,
 
     // Avoid statically allocating because it increases the binary size.
@@ -53,8 +55,7 @@ pub struct INotifyWatcher {
     read_ptr: Option<ReadPtr>,
 
     pub(crate) watch_count: AtomicU32,
-    /// Set by `wake()`; `read()` checks it after every `Futex::wait_forever`
-    /// so a watcher with nothing to watch exits instead of parking forever.
+    /// Set by `wake()`; `read()` returns nothing once it is set.
     shutdown_requested: AtomicBool,
     /// nanoseconds
     pub(crate) coalesce_interval: isize,
@@ -64,6 +65,7 @@ impl Default for INotifyWatcher {
     fn default() -> Self {
         Self {
             fd: Fd::INVALID,
+            wake_fd: Fd::INVALID,
             loaded: false,
             eventlist_bytes: bun_core::boxed_zeroed(),
             eventlist_ptrs: [core::ptr::null(); max_count],
@@ -196,9 +198,17 @@ impl INotifyWatcher {
             return Err(crate::Error::Sys(errno));
         }
         let fd = Fd::from_native(raw);
+        let wake_fd = match bun_sys::eventfd(0, libc::EFD_CLOEXEC) {
+            Ok(wake_fd) => wake_fd,
+            Err(err) => {
+                let _ = bun_sys::close(fd);
+                return Err(err.into());
+            }
+        };
         bun_core::scoped_log!(watcher, "{} init", fd);
         Ok(Self {
             fd,
+            wake_fd,
             loaded: true,
             coalesce_interval: env_var::BUN_INOTIFY_COALESCE_INTERVAL
                 .get()
@@ -234,8 +244,45 @@ impl INotifyWatcher {
         } else {
             'outer: loop {
                 Futex::wait_forever(&self.watch_count, 0);
+
+                // Block here rather than in `read()` so `wake()` can interrupt
+                // the wait through `wake_fd`.
+                let mut fds = [
+                    system::pollfd {
+                        fd: self.fd.native(),
+                        events: (libc::POLLIN | libc::POLLERR) as _,
+                        revents: 0,
+                    },
+                    system::pollfd {
+                        fd: self.wake_fd.native(),
+                        events: libc::POLLIN as _,
+                        revents: 0,
+                    },
+                ];
+                // SAFETY: fds is a valid stack array; a null timeout blocks
+                // indefinitely; sigmask is null.
+                let poll_n = unsafe {
+                    system::ppoll(
+                        fds.as_mut_ptr(),
+                        fds.len(),
+                        core::ptr::null(),
+                        core::ptr::null(),
+                    )
+                };
                 if self.shutdown_requested.load(Ordering::Acquire) {
                     return Ok(&[]);
+                }
+                if poll_n < 0 {
+                    match bun_sys::get_errno(poll_n) {
+                        E::EINTR | E::EAGAIN => continue 'outer,
+                        e => {
+                            return Err(bun_sys::Error {
+                                errno: e as u32 as _,
+                                syscall: bun_sys::Tag::poll,
+                                ..Default::default()
+                            });
+                        }
+                    }
                 }
 
                 // SAFETY: fd is a valid inotify fd; buffer is valid for eventlist_bytes.len() bytes.
@@ -374,16 +421,18 @@ impl INotifyWatcher {
             let _ = bun_sys::close(self.fd);
             self.fd = Fd::INVALID;
         }
+        if self.wake_fd != Fd::INVALID {
+            let _ = bun_sys::close(self.wake_fd);
+            self.wake_fd = Fd::INVALID;
+        }
     }
 
-    /// Unblocks a watcher thread parked in `Futex::wait_forever` (nothing
-    /// watched yet) so it can observe `Watcher.running == false` and exit.
-    /// Best effort: a thread blocked inside the inotify `read()` itself
-    /// (watches exist) only returns on the next event, as before.
+    /// Unblocks `read()` whether it is parked on `watch_count` or in `ppoll`.
     pub(crate) fn wake(&self) {
         self.shutdown_requested.store(true, Ordering::Release);
         self.watch_count.fetch_add(1, Ordering::Release);
         Futex::wake(&self.watch_count, u32::MAX);
+        let _ = bun_sys::write(self.wake_fd, &1u64.to_ne_bytes());
     }
 }
 

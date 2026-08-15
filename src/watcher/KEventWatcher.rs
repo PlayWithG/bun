@@ -11,8 +11,7 @@ pub struct KEventWatcher {
 
 const CHANGELIST_COUNT: usize = 128;
 
-/// Ident of the `EVFILT_USER` event that `wake()` triggers. Idents are scoped
-/// per filter, so this cannot collide with the fd idents of `EVFILT_VNODE`.
+/// Idents are per filter, so this cannot collide with an `EVFILT_VNODE` fd.
 const WAKE_IDENT: usize = 0;
 
 fn wake_event(flags: u16, fflags: u32) -> libc::kevent {
@@ -50,9 +49,8 @@ impl KEventWatcher {
         }
     }
 
-    /// Unblocks a watcher thread parked in `kevent()` so it can observe
-    /// `Watcher.running == false` and exit. Called under `Watcher.mutex`,
-    /// which `thread_body` takes before `stop()`, so `fd` is still open here.
+    /// Called under `Watcher.mutex`, which `thread_body` takes before `stop()`,
+    /// so `fd` is still open here.
     pub(crate) fn wake(&self) {
         let _ = bun_sys::kevent(self.fd, &[wake_event(0, libc::NOTE_TRIGGER)], &mut [], None);
     }
@@ -97,8 +95,7 @@ pub(crate) fn watch_loop_cycle(this: &mut Watcher) -> bun_sys::Result<()> {
         count += bun_sys::kevent(fd, &[], &mut changelist[count..], Some(&ts))?;
     }
 
-    // Only vnode events map to watch items; the `EVFILT_USER` event posted by
-    // `wake()` is dropped here, and `watch_loop` then sees `running == false`.
+    // Drops the `EVFILT_USER` event posted by `wake()`.
     let mut changes = changelist[..count]
         .iter()
         .filter(|event| event.filter == libc::EVFILT_VNODE);

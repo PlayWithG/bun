@@ -21,14 +21,9 @@ pub struct WindowsWatcher {
     pub(crate) watcher: DirWatcher,
     pub(crate) buf: PathBuffer,
     pub(crate) base_idx: usize,
-    /// Number of `ReadDirectoryChangesW` calls started on `watcher.overlapped`
-    /// whose completion packets have not been dequeued yet. While non-zero the
-    /// kernel may still write into `watcher.overlapped` / `watcher.buf`, so
-    /// `stop()` cancels and drains before the allocation can be freed.
-    /// Maintained by `next()` on the watcher thread; `stop()` runs on that
-    /// thread, or on the owner's thread once the watcher thread has handed the
-    /// allocation back under `Watcher.mutex`.
-    armed: u32,
+    /// A read is outstanding on `watcher.overlapped`, so the kernel may still
+    /// write into `watcher` until its completion packet has been dequeued.
+    armed: bool,
 }
 
 impl Default for WindowsWatcher {
@@ -42,7 +37,7 @@ impl Default for WindowsWatcher {
             },
             buf: PathBuffer::uninit(),
             base_idx: 0,
-            armed: 0,
+            armed: false,
         }
     }
 }
@@ -307,16 +302,18 @@ impl WindowsWatcher {
         Ok(())
     }
 
+    /// The previous read stays armed across `next()` calls that returned
+    /// nothing, so the single `overlapped`/`buf` is never handed to two reads.
     fn arm(&mut self) -> bun_sys::Result<()> {
-        self.watcher.prepare()?;
-        self.armed += 1;
+        if !self.armed {
+            self.watcher.prepare()?;
+            self.armed = true;
+        }
         Ok(())
     }
 
-    /// Dequeues one packet from `iocp`, keeping `armed` in sync: every
-    /// `ReadDirectoryChangesW` that `arm()` started produces exactly one
-    /// packet carrying `watcher.overlapped`, whether it succeeded, failed, or
-    /// was cancelled.
+    /// Every read started by `arm()` produces exactly one packet carrying
+    /// `watcher.overlapped`, whether it succeeded, failed, or was cancelled.
     fn dequeue(&mut self, timeout_ms: w::DWORD) -> Packet {
         let mut nbytes: w::DWORD = 0;
         let mut key: w::ULONG_PTR = 0;
@@ -338,7 +335,7 @@ impl WindowsWatcher {
         };
 
         if overlapped == &raw mut self.watcher.overlapped {
-            self.armed -= 1;
+            self.armed = false;
             return Packet::Ours { nbytes, err };
         }
         if !overlapped.is_null() {
@@ -376,14 +373,10 @@ impl WindowsWatcher {
                     return Err(win32_watch_error(err));
                 }
                 Packet::Ours { nbytes: 0, .. } => {
-                    // ReadDirectoryChangesW internal change-buffer overflow — too many
-                    // events arrived between drain and re-arm. This is NOT a shutdown
-                    // signal: cancellation surfaces as a failed packet above, never as
-                    // a successful zero-byte one. Per MSDN, the function returns zero
-                    // bytes when its internal buffer overflows. Drop the lost events,
-                    // re-arm, and keep watching so --hot picks up the next change.
-                    // Returning ESHUTDOWN here kills the watcher thread and the --hot
-                    // child silently exits (hot.test.ts "should work with sourcemap
+                    // Per MSDN a successful zero-byte completion means the kernel's
+                    // change buffer overflowed (cancellation arrives as a failed packet
+                    // above). Re-arm instead of erroring out, or the --hot child
+                    // silently exits (hot.test.ts "should work with sourcemap
                     // generation" flake).
                     bun_core::scoped_log!(
                         watcher,
@@ -404,17 +397,14 @@ impl WindowsWatcher {
     }
 
     pub(crate) fn stop(&mut self) {
-        if self.armed > 0 {
-            // The caller frees the Watcher (and with it `watcher.overlapped` /
-            // `watcher.buf`) right after this returns, so wait until the kernel
-            // has finished with every outstanding read. `CancelIoEx` failing
-            // only means they already completed; their packets are queued
-            // either way. A timeout here means a completion went missing; fall
-            // through and close, which cancels whatever is left.
+        if self.armed {
+            // The caller frees `watcher` right after this returns; `CancelIoEx`
+            // failing only means the read already completed and its packet is
+            // queued.
             // SAFETY: dir_handle is the open directory handle from init(); a
             // null OVERLAPPED cancels all I/O issued on it.
             let _ = unsafe { w::kernel32::CancelIoEx(self.watcher.dir_handle, ptr::null_mut()) };
-            while self.armed > 0 {
+            while self.armed {
                 match self.dequeue(DRAIN_TIMEOUT_MS) {
                     Packet::Ours { .. } | Packet::Foreign | Packet::Wake => {}
                     Packet::Timeout | Packet::PortError(_) => break,
@@ -433,37 +423,31 @@ impl WindowsWatcher {
         }
     }
 
-    /// Unblocks a watcher thread parked in `GetQueuedCompletionStatus` so it
-    /// can observe `Watcher.running == false` and exit. Called under
-    /// `Watcher.mutex`, which `thread_body` takes before `stop()`, so `iocp`
-    /// is still open here.
+    /// Called under `Watcher.mutex`, which `thread_body` takes before `stop()`,
+    /// so `iocp` is still open here.
     pub(crate) fn wake(&self) {
-        // SAFETY: iocp is a live port; a null OVERLAPPED is the documented way
-        // to post a bare packet, which `dequeue` reports as `Packet::Wake`.
+        // SAFETY: iocp is a live port; the packet carries no OVERLAPPED, which
+        // `dequeue` reports as `Packet::Wake`.
         let _ =
             unsafe { w::kernel32::PostQueuedCompletionStatus(self.iocp, 0, 0, ptr::null_mut()) };
     }
 }
 
-/// How long `stop()` waits for each cancelled read's completion packet.
-/// Cancellation completes in microseconds; this only bounds the pathological
-/// case.
+/// Cancellation completes in microseconds; this only bounds the pathological case.
 const DRAIN_TIMEOUT_MS: w::DWORD = 1000;
 
 enum Packet {
-    /// A packet for our `ReadDirectoryChangesW`. `err` is `SUCCESS` unless the
-    /// read itself failed or was cancelled.
+    /// `err` is `SUCCESS` unless the read failed or was cancelled.
     Ours {
         nbytes: w::DWORD,
         err: w::Win32Error,
     },
-    /// A packet carrying some other OVERLAPPED; nothing else issues I/O on this
-    /// port, but stay defensive.
+    /// Carries an OVERLAPPED that is not ours.
     Foreign,
-    /// The bare packet posted by `wake()`.
+    /// Posted by `wake()`.
     Wake,
     Timeout,
-    /// `GetQueuedCompletionStatus` itself failed without dequeuing anything.
+    /// `GetQueuedCompletionStatus` failed without dequeuing anything.
     PortError(w::Win32Error),
 }
 

@@ -4,7 +4,7 @@ import { expect, test } from "bun:test";
 import { bunEnv, bunExe, isLinux } from "harness";
 import path from "node:path";
 
-test("Watcher is cleaned up when DevServer fails to start", async () => {
+test("tearing down a dev server also tears down its watcher thread", async () => {
   await using proc = Bun.spawn({
     cmd: [bunExe(), path.join(import.meta.dir, "dev-server-port-in-use-fixture.ts")],
     env: bunEnv,
@@ -15,28 +15,22 @@ test("Watcher is cleaned up when DevServer fails to start", async () => {
 
   const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
 
-  // Diagnose failures with the subprocess output before asserting the exit
-  // code, per repo testing convention.
   expect({ stdout, stderr }).toEqual({
     stdout: expect.stringContaining("PASS"),
     stderr: expect.anything(),
   });
 
   if (isLinux) {
-    // On Linux we can observe the watcher-thread and inotify-fd leaks
-    // directly via /proc. Without the fix, every failed `Bun.serve` leaves
-    // a File Watcher thread parked on a futex and/or an open inotify
-    // instance behind.
-    const threadMatch = stdout.match(/THREAD_DELTA=(-?\d+)/);
-    const inotifyMatch = stdout.match(/INOTIFY_DELTA=(-?\d+)/);
-    expect(threadMatch).not.toBeNull();
-    expect(inotifyMatch).not.toBeNull();
-    const threadDelta = parseInt(threadMatch![1], 10);
-    const inotifyDelta = parseInt(inotifyMatch![1], 10);
-    // Allow a little slack for unrelated background threads/fds, but a
-    // leak of one per iteration would be >= `iterations` (currently 40).
-    expect(threadDelta).toBeLessThan(10);
-    expect(inotifyDelta).toBeLessThan(10);
+    // Without the fix every dev server leaves one parked watcher thread and one
+    // inotify instance behind: 20 for the listen failures and 5 for the served
+    // servers. The thread counts get a little slack for unrelated threads.
+    const deltas = JSON.parse(stdout.split("\n").find(line => line.startsWith("{"))!);
+    expect(deltas).toEqual({
+      listenFail: { threads: expect.any(Number), inotify: 0 },
+      served: { threads: expect.any(Number), inotify: 0 },
+    });
+    expect(deltas.listenFail.threads).toBeLessThan(10);
+    expect(deltas.served.threads).toBeLessThan(3);
   }
 
   expect(exitCode).toBe(0);
