@@ -984,7 +984,10 @@ impl BunTest {
         Ok(())
     }
 
-    fn update_min_timeout(&mut self, global_this: &JSGlobalObject, min_timeout: &Timespec) {
+    /// Arms `self.timer` for `min_timeout` unless an earlier deadline is armed. Once the
+    /// file is `Phase::Done`, firing only wakes the event loop (`bun_test_timeout_callback`),
+    /// which is how `test_command.rs` bounds its script drain; `Drop` removes an unfired timer.
+    pub(crate) fn update_min_timeout(&mut self, global_this: &JSGlobalObject, min_timeout: &Timespec) {
         let _g = group_begin!();
         let _ = global_this;
         // only set the timer if the new timeout is sooner than the current timeout. this unfortunately means that we can't unset an unnecessary timer.

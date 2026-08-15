@@ -920,6 +920,42 @@ fn should_drain_event_loop() -> bool {
     env_var::BUN_TEST_DRAIN_EVENT_LOOP.get().unwrap_or(false)
 }
 
+/// A file that registered nothing with `bun:test` is a plain script: as under
+/// `bun <file>`, run its timers and I/O until nothing is left or one of them throws
+/// or rejects, which the usual between-tests reporting has already counted (#34859).
+/// The caller checked that the loop was idle before the file ran, so everything
+/// waited on here is the file's own. Bounded by the test timeout (0 = unbounded) so a
+/// leaked server or interval cannot hang the run; the file's `BunTest` timer is armed
+/// at that deadline so the poll wakes up for it.
+fn drain_script_file(
+    reporter: &CommandLineReporter,
+    buntest: &bun_test::BunTestPtr,
+    vm: &mut VirtualMachine,
+) {
+    let errors_before = vm.unhandled_error_counter;
+    let timeout_ms = match reporter.jest.default_timeout_override {
+        u32::MAX => reporter.jest.default_timeout_ms,
+        override_ms => override_ms,
+    };
+    let deadline = (timeout_ms != 0).then(|| {
+        bun::Timespec::now(bun::TimespecMockMode::ForceRealTime).add_ms(i64::from(timeout_ms))
+    });
+    if let Some(deadline) = &deadline {
+        buntest.get().update_min_timeout(vm.global(), deadline);
+    }
+    while vm.unhandled_error_counter == errors_before
+        && (vm.has_keep_alives() || vm.event_loop_shared().has_pending_tasks())
+        && deadline.is_none_or(|deadline| {
+            bun::Timespec::now(bun::TimespecMockMode::ForceRealTime)
+                .order(&deadline)
+                .is_lt()
+        })
+    {
+        vm.event_loop_ref().auto_tick();
+        vm.event_loop_ref().tick();
+    }
+}
+
 /// jest and vitest never run a test file's `process.on('exit')` listeners; node's test harness asserts from them.
 pub(crate) fn skip_exit_listeners(reporter: &CommandLineReporter) -> bool {
     !(reporter.jest.node_test_used || should_drain_event_loop())
@@ -3276,11 +3312,11 @@ impl TestCommand {
             }
             // need to wake up so autoTick() doesn't wait for 16-100ms after loading the entrypoint
             vm.wakeup();
-            // Record whether the loop was idle after preloads so the post-test
-            // drain (below) only runs when every ref'd handle is this file's.
+            // Sampled before the file's own top level runs: when nothing was alive
+            // then, whatever drain_script_file() (below) waits on is this file's own.
             let mut idle_after_preloads = false;
             let promise = vm.load_entry_point_for_test_runner(file_path, |vm| {
-                idle_after_preloads = script_keepalive_count(vm) == 0;
+                idle_after_preloads = !vm.has_keep_alives();
             })?;
             // Only count the file once, not once per repeat
             if repeat_index == 0 {
@@ -3373,47 +3409,21 @@ impl TestCommand {
                     }
                 }
 
-                // A file with no bun:test registrations is a plain script: drain
-                // the loop so late errors surface (like `bun <file>`). Gated on
-                // an idle loop after preloads so nothing else can hang it.
-                if idle_after_preloads
-                    && buntest.collection.root_scope.is_bare()
-                    && buntest.bun_test_root.get().hook_scope.is_bare()
-                {
-                    let drain_base = vm.unhandled_error_counter;
-                    // Bound by the effective test timeout (override → default;
-                    // 0 = unlimited, matching `bun <file>`) as a safety valve.
-                    let timeout_ms = match reporter.jest.default_timeout_override {
-                        u32::MAX => reporter.jest.default_timeout_ms,
-                        v => v,
-                    };
-                    let deadline = (timeout_ms != 0).then(|| {
-                        bun_core::Timespec::now(bun_core::TimespecMockMode::ForceRealTime)
-                            .add_ms(i64::from(timeout_ms))
-                    });
-                    while drain_base == vm.unhandled_error_counter
-                        && script_keepalive_count(vm) > 0
-                        && deadline.is_none_or(|d| {
-                            bun_core::Timespec::now(bun_core::TimespecMockMode::ForceRealTime)
-                                .order(&d)
-                                .is_lt()
-                        })
-                    {
-                        vm.event_loop_ref().tick();
-                        vm.event_loop_ref().auto_tick();
-                    }
-                }
-
                 let el = vm.event_loop();
                 // SAFETY: el is the VM-owned event loop; vm is passed back as *mut.
                 unsafe { (*el).tick_immediate_tasks(vm) };
 
-                // Node parity: a node test file exits only when its loop drains.
-                // on_before_exit() drains and dispatches 'beforeExit' like `bun run`;
-                // it early-returns when unhandled_error_counter > 0, which is fine
-                // here since such a file already failed. Opt-in; one file per process.
                 if should_drain_event_loop() {
+                    // Node parity: a node test file exits only when its loop drains.
+                    // on_before_exit() drains and dispatches 'beforeExit' like `bun run`;
+                    // it early-returns when unhandled_error_counter > 0, which is fine
+                    // here since such a file already failed. Opt-in; one file per process.
                     vm.on_before_exit();
+                } else if idle_after_preloads
+                    && buntest.collection.root_scope.is_bare()
+                    && buntest.bun_test_root.get().hook_scope.is_bare()
+                {
+                    drain_script_file(reporter, &buntest_strong, vm);
                 }
                 drop(buntest_strong);
             }
@@ -3444,21 +3454,6 @@ impl TestCommand {
         }
         Ok(())
     }
-}
-
-/// Count of ref'd handles plus ref'd JS timers (they share one loop ref).
-/// Zero at `after_preloads` means every handle observed during the post-test
-/// drain was created by this file.
-fn script_keepalive_count(vm: &VirtualMachine) -> usize {
-    let state = crate::jsc_hooks::runtime_state();
-    let timers = if state.is_null() {
-        0
-    } else {
-        // SAFETY: `runtime_state()` returns the live per-thread `RuntimeState`;
-        // `active_timer_count` is plain data read on the owning JS thread.
-        unsafe { (*state).timer.active_timer_count.max(0) as usize }
-    };
-    vm.active_keepalive_count() + timers
 }
 
 pub(crate) fn handle_top_level_test_error_before_javascript_start(err: &crate::Error) -> ! {

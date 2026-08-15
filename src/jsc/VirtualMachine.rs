@@ -1188,18 +1188,11 @@ impl VirtualMachine {
 
     pub fn is_event_loop_alive_excluding_immediates(&self) -> bool {
         let el = self.event_loop_shared();
-        let active = self
-            .platform_loop_opt()
-            .map(|h| h.is_active())
-            .unwrap_or(false);
         self.unhandled_error_counter == 0
-            && ((active as usize)
-                + self.active_tasks
-                + el.tasks.readable_length()
-                + el.yield_tasks.len()
-                + (!el.concurrent_tasks.is_empty() as usize)
-                + (el.has_pending_refs() as usize)
-                > 0)
+            && (self.has_keep_alives()
+                || el.tasks.readable_length() > 0
+                || !el.yield_tasks.is_empty()
+                || !el.concurrent_tasks.is_empty())
     }
 
     pub fn is_event_loop_alive(&self) -> bool {
@@ -1209,20 +1202,14 @@ impl VirtualMachine {
             || !el.next_immediate_tasks.is_empty()
     }
 
-    /// Count of ref'd handles and outstanding tasks keeping the loop alive.
-    /// The test runner's idle-after-preloads gate only drains a script file
-    /// when this was zero before it loaded (prior handles skip the drain).
-    pub fn active_keepalive_count(&self) -> usize {
-        let el = self.event_loop_shared();
-        let active = self
-            .platform_loop_opt()
-            .map(|h| h.active_count() as usize)
-            .unwrap_or(0);
-        let concurrent = el
-            .concurrent_ref
-            .load(core::sync::atomic::Ordering::SeqCst)
-            .max(0) as usize;
-        active + self.active_tasks + concurrent
+    /// Whether something ref'd (a platform-loop handle or ref'd timer, a
+    /// `Ref`-holding object, a queued `ref_keep_alive`) still holds the loop
+    /// open. Unlike `is_event_loop_alive()` this ignores the task queues and
+    /// `unhandled_error_counter`, which `bun test` accumulates across files.
+    pub fn has_keep_alives(&self) -> bool {
+        self.platform_loop_opt().is_some_and(|h| h.is_active())
+            || self.active_tasks > 0
+            || self.event_loop_shared().has_pending_refs()
     }
 
     pub fn wakeup(&mut self) {
