@@ -8,28 +8,14 @@ pub enum Error {
     NotDir,
     #[error("NameTooLong")]
     NameTooLong,
-    #[error("FileTooBig")]
-    FileTooBig,
     #[error("SymLinkLoop")]
     SymLinkLoop,
-    #[error("ProcessFdQuotaExceeded")]
-    ProcessFdQuotaExceeded,
     #[error("SystemFdQuotaExceeded")]
     SystemFdQuotaExceeded,
     #[error("SystemResources")]
     SystemResources,
-    #[error("ReadOnlyFileSystem")]
-    ReadOnlyFileSystem,
-    #[error("FileSystem")]
-    FileSystem,
-    #[error("FileBusy")]
-    FileBusy,
     #[error("DeviceBusy")]
     DeviceBusy,
-    #[error("InvalidUtf8")]
-    InvalidUtf8,
-    #[error("InvalidWtf8")]
-    InvalidWtf8,
     #[error("TarballHTTP400")]
     TarballHTTP400,
     #[error("TarballHTTP401")]
@@ -212,16 +198,8 @@ pub enum Error {
     LockfileValidationFailedInvalidBinTag,
     #[error("Lockfile validation failed: invalid package scripts")]
     LockfileValidationFailedInvalidPackageScripts,
-    #[error("NPMLockfileVersionMismatch")]
-    NPMLockfileVersionMismatch,
     #[error("InvalidNPMLockfile")]
     InvalidNPMLockfile,
-    #[error("PathTooLong")]
-    PathTooLong,
-    #[error("LockfileWorkspaceMissingResolved")]
-    LockfileWorkspaceMissingResolved,
-    #[error("NotAllPackagesGotResolved")]
-    NotAllPackagesGotResolved,
     #[error("DependencyLoop")]
     DependencyLoop,
     #[error("NotSupported")]
@@ -260,8 +238,6 @@ pub enum Error {
     #[error(transparent)]
     Transpiler(#[from] bun_transpiler::Error),
     #[error(transparent)]
-    Zlib(#[from] bun_zlib::ZlibError),
-    #[error(transparent)]
     Paths(#[from] bun_paths::Error),
     #[error(transparent)]
     PathOptions(#[from] bun_paths::path_options::Error),
@@ -277,17 +253,10 @@ impl Error {
             Self::AccessDenied => "AccessDenied",
             Self::NotDir => "NotDir",
             Self::NameTooLong => "NameTooLong",
-            Self::FileTooBig => "FileTooBig",
             Self::SymLinkLoop => "SymLinkLoop",
-            Self::ProcessFdQuotaExceeded => "ProcessFdQuotaExceeded",
             Self::SystemFdQuotaExceeded => "SystemFdQuotaExceeded",
             Self::SystemResources => "SystemResources",
-            Self::ReadOnlyFileSystem => "ReadOnlyFileSystem",
-            Self::FileSystem => "FileSystem",
-            Self::FileBusy => "FileBusy",
             Self::DeviceBusy => "DeviceBusy",
-            Self::InvalidUtf8 => "InvalidUtf8",
-            Self::InvalidWtf8 => "InvalidWtf8",
             Self::TarballHTTP400 => "TarballHTTP400",
             Self::TarballHTTP401 => "TarballHTTP401",
             Self::TarballHTTP402 => "TarballHTTP402",
@@ -401,11 +370,7 @@ impl Error {
             Self::LockfileValidationFailedInvalidPackageScripts => {
                 "Lockfile validation failed: invalid package scripts"
             }
-            Self::NPMLockfileVersionMismatch => "NPMLockfileVersionMismatch",
             Self::InvalidNPMLockfile => "InvalidNPMLockfile",
-            Self::PathTooLong => "PathTooLong",
-            Self::LockfileWorkspaceMissingResolved => "LockfileWorkspaceMissingResolved",
-            Self::NotAllPackagesGotResolved => "NotAllPackagesGotResolved",
             Self::DependencyLoop => "DependencyLoop",
             Self::NotSupported => "NotSupported",
             Self::Unexpected => "Unexpected",
@@ -424,7 +389,6 @@ impl Error {
             Self::Parsers(e) => e.name(),
             Self::Bunfig(e) => e.name(),
             Self::Transpiler(e) => e.name(),
-            Self::Zlib(e) => <&'static str>::from(e),
             Self::Paths(e) => e.name(),
             Self::PathOptions(e) => <&'static str>::from(e),
             Self::Fmt(_) => "FmtError",

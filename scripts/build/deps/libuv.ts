@@ -12,8 +12,13 @@ import type { Dependency } from "../source.ts";
 
 // Tip of oven-sh/libuv's `bun` branch: upstream f3ce527e + win-pipe CancelIoEx
 // fix, ConPTY uv_spawn, AppContainer pipe namespace (oven-sh/libuv#7), fs/tty
-// fixes (oven-sh/libuv#8). To bump, update `bun`.
-const LIBUV_COMMIT = "f6e75a7efdc8651ace3b0d07efbfd0b3e5037278";
+// fixes (oven-sh/libuv#8), high-res poll timeouts (oven-sh/libuv#9),
+// FileModeInformation error return (oven-sh/libuv#10), error translation /
+// propagation audit fixes (oven-sh/libuv#11), uv_spawn returns an error
+// instead of aborting on AssignProcessToJobObject failure (oven-sh/libuv#12),
+// and closes the process/thread handles on that error path (oven-sh/libuv#13).
+// To bump, update `bun`.
+const LIBUV_COMMIT = "89ee34396dc7f5f1bce620e23d9fe6bbd0facd97";
 
 // prettier-ignore
 const SHARED = [
