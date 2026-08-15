@@ -49,27 +49,60 @@ function resolveConnect(dispatcher) {
   return undefined;
 }
 
-function runLookup(lookup, hostname, connect) {
+function runLookup(lookup, hostname, connect, signal) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) return reject(signal.reason);
+    let onAbort;
+    const settle = fn => value => {
+      if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
+      fn(value);
+    };
+    const ok = settle(resolve);
+    const fail = settle(reject);
+    if (signal != null) {
+      onAbort = () => fail(signal.reason);
+      signal.addEventListener("abort", onAbort, { once: true });
+    }
     // The options net.connect passes to a custom lookup (family 0 = any).
     lookup(hostname, { family: connect.family ?? 0, hints: connect.hints ?? 0, all: false }, (err, address) => {
-      if (err) return reject(err);
+      if (err) return fail(err);
       if ($isArray(address)) {
         // `all: true` shape: [{ address, family }, ...]
         address = address.length > 0 ? address[0]?.address : undefined;
       }
       if (typeof address !== "string" || isIP(address) === 0) {
-        return reject(new TypeError(`lookup did not return a valid IP address for "${hostname}"`));
+        return fail(
+          new TypeError(`lookup did not return a valid IP address for "${hostname}" (received ${String(address)})`),
+        );
       }
-      resolve(address);
+      ok(address);
     });
   });
+}
+
+// request() also accepts the raw flat header form ["name", "value", ...],
+// which the Headers constructor rejects.
+function headersFromRequestOptions(inputHeaders) {
+  if ($isArray(inputHeaders)) {
+    const { length } = inputHeaders;
+    if (length > 0 && typeof inputHeaders[0] === "string") {
+      if (length % 2 !== 0) {
+        throw new InvalidArgumentError("headers array must be even");
+      }
+      const headers = new Headers();
+      for (let i = 0; i < length; i += 2) {
+        headers.append(inputHeaders[i], inputHeaders[i + 1]);
+      }
+      return headers;
+    }
+  }
+  return new Headers(inputHeaders || kEmptyObject);
 }
 
 // Pins `url` to the address from connect.lookup. `host` is the original
 // authority, sent as the Host header; native fetch also takes SNI and
 // certificate verification from it, so HTTPS still verifies the real hostname.
-async function applyConnect(url, connect) {
+async function applyConnect(url, connect, signal) {
   const { protocol } = url;
   // Only http(s) opens a socket; data:, blob:, file: never consult the connector.
   if (protocol !== "http:" && protocol !== "https:") return undefined;
@@ -82,7 +115,7 @@ async function applyConnect(url, connect) {
   // URL#hostname keeps the brackets on IPv6 literals.
   const bare = hostname.charCodeAt(0) === 0x5b /* [ */ ? hostname.slice(1, -1) : hostname;
   if (isIP(bare) !== 0) return undefined;
-  const address = await runLookup(lookup, bare, connect);
+  const address = await runLookup(lookup, bare, connect, signal);
   const host = url.host;
   const pinned = new URL(url);
   pinned.hostname = isIP(address) === 6 ? `[${address}]` : address;
@@ -111,13 +144,16 @@ function isRedirectStatus(status) {
 // lookup hook sees every hostname; native fetch's own `follow` would resolve
 // redirect targets with the OS resolver, bypassing the hook.
 async function followRedirectsWithConnect(url, init, connect, opts) {
-  let { method, body, headers, limit, redirectError, lookupError } = opts;
+  let { method, body, headers, limit, redirectError, streamBodyError, lookupError } = opts;
+  const { signal } = init;
   method = typeof method === "string" ? method.toUpperCase() : "GET";
   for (let hops = 0; ; ) {
     let pin;
     try {
-      pin = await applyConnect(url, connect);
+      pin = await applyConnect(url, connect, signal);
     } catch (err) {
+      // An abort reason surfaces as-is, like native fetch rejecting on abort.
+      if (signal?.aborted && err === signal.reason) throw err;
       throw lookupError(err);
     }
     const hopHeaders = new Headers(headers);
@@ -160,8 +196,7 @@ async function followRedirectsWithConnect(url, init, connect, opts) {
       headers.delete("content-type");
       headers.delete("content-length");
     } else if (body instanceof ReadableStream) {
-      // The previous hop consumed the stream; it cannot be replayed.
-      throw redirectError();
+      throw streamBodyError(status, next.href);
     }
     url = next;
   }
@@ -175,13 +210,15 @@ async function fetchWithConnect(input, init, connect) {
   const isRequest = input instanceof Request;
   const url = new URL(isRequest ? input.url : input);
   const redirectMode = init?.redirect ?? (isRequest ? input.redirect : undefined) ?? "follow";
+  const signal = init?.signal ?? (isRequest ? input.signal : undefined);
   if (redirectMode !== "follow") {
     // "manual" returns the 3xx and "error" rejects natively; neither follows
     // a redirect, so only the first hop needs pinning.
     let pin;
     try {
-      pin = await applyConnect(url, connect);
+      pin = await applyConnect(url, connect, signal);
     } catch (err) {
+      if (signal?.aborted && err === signal.reason) throw err;
       throw fetchLookupError(err);
     }
     if (pin === undefined) return nativeFetch(input, init);
@@ -199,13 +236,14 @@ async function fetchWithConnect(input, init, connect) {
   // Buffer a Request body so 307/308 hops can replay it.
   const body =
     init?.body !== undefined ? init.body : isRequest && input.body != null ? await input.arrayBuffer() : undefined;
-  const signal = init?.signal ?? (isRequest ? input.signal : undefined);
   return followRedirectsWithConnect(url, { ...init, signal }, connect, {
     method,
     body,
     headers,
     limit: 20,
     redirectError: () => fetchFailed(new Error("redirect count exceeded")),
+    streamBodyError: (status, href) =>
+      fetchFailed(new Error(`cannot follow the ${status} redirect to ${href}: the request body is a stream that was already sent; use a buffered body to follow redirects`)),
     lookupError: fetchLookupError,
   });
 }
@@ -412,18 +450,20 @@ async function request(
     resp = await followRedirectsWithConnect(new URL(url), { signal, mode: "cors", keepalive: !reset }, connect, {
       method,
       body: inputBody,
-      headers: new Headers(inputHeaders || kEmptyObject),
+      headers: headersFromRequestOptions(inputHeaders),
       limit: maxRedirections,
       redirectError: () => new Error("redirected too many times"),
+      streamBodyError: (status, href) =>
+        new Error(`cannot follow the ${status} redirect to ${href}: the request body is a stream that was already sent; use a buffered body to follow redirects`),
       lookupError: err => err,
     });
   } else {
     let requestHeaders = inputHeaders || kEmptyObject;
     if (hasLookup) {
-      const pin = await applyConnect(typeof url === "string" ? new URL(url) : url, connect);
+      const pin = await applyConnect(typeof url === "string" ? new URL(url) : url, connect, signal);
       if (pin !== undefined) {
         url = pin.url;
-        requestHeaders = new Headers(requestHeaders);
+        requestHeaders = headersFromRequestOptions(inputHeaders);
         if (!requestHeaders.has("host")) requestHeaders.set("host", pin.host);
       }
     }

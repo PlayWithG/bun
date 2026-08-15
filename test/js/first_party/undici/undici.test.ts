@@ -258,10 +258,14 @@ describe("undici dispatcher connect.lookup", () => {
     });
     expect(
       await undiciFetch(`http://localhost:${server.port}/`, { dispatcher: agent }).then(
-        () => "resolved",
-        (err: TypeError) => (err.cause as Error).message,
+        () => ({ name: "resolved" }),
+        (err: TypeError) => ({
+          name: err.constructor.name,
+          message: err.message,
+          cause: (err.cause as Error | undefined)?.message,
+        }),
       ),
-    ).toBe("blocked by rebinding protection");
+    ).toEqual({ name: "TypeError", message: "fetch failed", cause: "blocked by rebinding protection" });
     expect(hits).toBe(0);
   });
 
@@ -394,10 +398,14 @@ describe("undici dispatcher connect.lookup", () => {
     });
     expect(
       await undiciFetch(`http://ok.invalid:${origin.port}/`, { dispatcher: agent }).then(
-        () => "resolved",
-        (err: TypeError) => (err.cause as Error).message,
+        () => ({ name: "resolved" }),
+        (err: TypeError) => ({
+          name: err.constructor.name,
+          message: err.message,
+          cause: (err.cause as Error | undefined)?.message,
+        }),
       ),
-    ).toBe("blocked");
+    ).toEqual({ name: "TypeError", message: "fetch failed", cause: "blocked" });
     expect(targetHits).toBe(0);
   });
 
@@ -429,6 +437,100 @@ describe("undici dispatcher connect.lookup", () => {
         err => (err instanceof errors.NotSupportedError ? "NotSupportedError" : String(err)),
       ),
     ).toBe("NotSupportedError");
+  });
+
+  it("redirect manual and error modes still pin the first hop", async () => {
+    await using origin = Bun.serve({
+      port: 0,
+      fetch: () => Response.redirect("http://elsewhere.invalid/", 302),
+    });
+    const { agent, seen } = pinningAgent();
+    const res = await undiciFetch(`http://manual.invalid:${origin.port}/`, { dispatcher: agent, redirect: "manual" });
+    expect(res.status).toBe(302);
+    expect(res.url).toBe(`http://manual.invalid:${origin.port}/`);
+
+    // A Request input goes through the same branch.
+    const req = new Request(`http://manual.invalid:${origin.port}/`, { redirect: "manual" });
+    const res2 = await undiciFetch(req, { dispatcher: agent });
+    expect(res2.status).toBe(302);
+
+    expect(
+      await undiciFetch(`http://manual.invalid:${origin.port}/`, { dispatcher: agent, redirect: "error" }).then(
+        () => "resolved",
+        () => "rejected",
+      ),
+    ).toBe("rejected");
+    expect(seen).toEqual(["manual.invalid", "manual.invalid", "manual.invalid"]);
+  });
+
+  it("an abort signal rejects a lookup that never completes", async () => {
+    const controller = new AbortController();
+    const agent = new Agent({
+      connect: {
+        // Never calls cb; aborting must reject the pending fetch.
+        lookup: () => controller.abort(new Error("abort during lookup")),
+      },
+    });
+    expect(
+      await undiciFetch(`http://${UNRESOLVABLE}:1/`, { dispatcher: agent, signal: controller.signal }).then(
+        () => "resolved",
+        (err: Error) => err.message,
+      ),
+    ).toBe("abort during lookup");
+
+    // An already-aborted signal rejects before the hook runs.
+    const { agent: pinner, seen } = pinningAgent();
+    expect(
+      await undiciFetch(`http://${UNRESOLVABLE}:1/`, {
+        dispatcher: pinner,
+        signal: AbortSignal.abort(new Error("pre-aborted")),
+      }).then(
+        () => "resolved",
+        (err: Error) => err.message,
+      ),
+    ).toBe("pre-aborted");
+    expect(seen).toEqual([]);
+  });
+
+  it("request() accepts flat-array headers on the pinned path", async () => {
+    await using server = Bun.serve({
+      port: 0,
+      fetch: req => new Response(`${req.headers.get("x-a")} ${req.headers.get("cookie")}`),
+    });
+    const { agent } = pinningAgent();
+    const { body } = await request(`http://${UNRESOLVABLE}:${server.port}/`, {
+      dispatcher: agent,
+      maxRedirections: 1,
+      headers: ["x-a", "1", "cookie", "a=1", "cookie", "b=2"],
+    });
+    // Bun's Headers joins repeated cookie entries with "; ".
+    expect(await body!.text()).toBe("1 a=1; b=2");
+  });
+
+  it("request() enforces maxRedirections on the pinned path", async () => {
+    let port = 0;
+    await using server = Bun.serve({
+      port: 0,
+      fetch: req => {
+        const n = Number(new URL(req.url).pathname.slice(1));
+        return n >= 2 ? new Response("done") : Response.redirect(`http://chain.invalid:${port}/${n + 1}`, 302);
+      },
+    });
+    port = server.port;
+    const { agent } = pinningAgent();
+
+    // Exactly at the limit succeeds (two redirects, cap 2).
+    const { statusCode, body } = await request(`http://chain.invalid:${port}/0`, {
+      dispatcher: agent,
+      maxRedirections: 2,
+    });
+    expect(await body!.text()).toBe("done");
+    expect(statusCode).toBe(200);
+
+    // One past the limit rejects.
+    await expect(
+      request(`http://chain.invalid:${port}/0`, { dispatcher: agent, maxRedirections: 1 }),
+    ).rejects.toThrow("redirected too many times");
   });
 
   it("URLs without a network authority skip the hook", async () => {
