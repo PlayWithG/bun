@@ -920,13 +920,9 @@ fn should_drain_event_loop() -> bool {
     env_var::BUN_TEST_DRAIN_EVENT_LOOP.get().unwrap_or(false)
 }
 
-/// A file that registered nothing with `bun:test` is a plain script: as under
-/// `bun <file>`, run its timers and I/O until nothing is left or one of them throws
-/// or rejects, which the usual between-tests reporting has already counted (#34859).
-/// The caller checked that the loop was idle before the file ran, so everything
-/// waited on here is the file's own. Bounded by the test timeout (0 = unbounded) so a
-/// leaked server or interval cannot hang the run; the file's `BunTest` timer is armed
-/// at that deadline so the poll wakes up for it.
+/// Runs a script-style file's timers and I/O, as `bun <file>` would, until they
+/// finish, one of them throws or rejects, or the test timeout (0 = none) passes.
+/// The file's `BunTest` timer is armed at that deadline so the poll wakes for it.
 fn drain_script_file(
     reporter: &CommandLineReporter,
     buntest: &bun_test::BunTestPtr,
@@ -3312,8 +3308,7 @@ impl TestCommand {
             }
             // need to wake up so autoTick() doesn't wait for 16-100ms after loading the entrypoint
             vm.wakeup();
-            // Sampled before the file's own top level runs: when nothing was alive
-            // then, whatever drain_script_file() (below) waits on is this file's own.
+            // When nothing was alive here, whatever drain_script_file() waits on is this file's.
             let mut idle_after_preloads = false;
             let promise = vm.load_entry_point_for_test_runner(file_path, |vm| {
                 idle_after_preloads = !vm.has_keep_alives();
@@ -3413,11 +3408,11 @@ impl TestCommand {
                 // SAFETY: el is the VM-owned event loop; vm is passed back as *mut.
                 unsafe { (*el).tick_immediate_tasks(vm) };
 
+                // Node parity: a node test file exits only when its loop drains.
+                // on_before_exit() drains and dispatches 'beforeExit' like `bun run`;
+                // it early-returns when unhandled_error_counter > 0, which is fine
+                // here since such a file already failed. Opt-in; one file per process.
                 if should_drain_event_loop() {
-                    // Node parity: a node test file exits only when its loop drains.
-                    // on_before_exit() drains and dispatches 'beforeExit' like `bun run`;
-                    // it early-returns when unhandled_error_counter > 0, which is fine
-                    // here since such a file already failed. Opt-in; one file per process.
                     vm.on_before_exit();
                 } else if idle_after_preloads
                     && buntest.collection.root_scope.is_bare()

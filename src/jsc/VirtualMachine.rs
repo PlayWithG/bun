@@ -1202,10 +1202,8 @@ impl VirtualMachine {
             || !el.next_immediate_tasks.is_empty()
     }
 
-    /// Whether something ref'd (a platform-loop handle or ref'd timer, a
-    /// `Ref`-holding object, a queued `ref_keep_alive`) still holds the loop
-    /// open. Unlike `is_event_loop_alive()` this ignores the task queues and
-    /// `unhandled_error_counter`, which `bun test` accumulates across files.
+    /// Whether a ref'd handle, timer or task still holds the loop open. Unlike
+    /// `is_event_loop_alive()` this ignores queued tasks and `unhandled_error_counter`.
     pub fn has_keep_alives(&self) -> bool {
         self.platform_loop_opt().is_some_and(|h| h.is_active())
             || self.active_tasks > 0
@@ -4894,8 +4892,7 @@ impl VirtualMachine {
     }
 
     /// Loads a test-file entry point and waits for the load promise to settle.
-    /// `after_preloads` runs between preload completion and entry-point
-    /// evaluation so the caller can observe preload-created handles.
+    /// `after_preloads` runs once preloads have finished, before the file is evaluated.
     pub fn load_entry_point_for_test_runner(
         &mut self,
         entry_path: &[u8],
