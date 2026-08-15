@@ -409,6 +409,21 @@ describe("undici dispatcher connect.lookup", () => {
     expect(targetHits).toBe(0);
   });
 
+  it("redirects to non-http schemes are rejected", async () => {
+    await using origin = Bun.serve({
+      port: 0,
+      fetch: () => new Response(null, { status: 302, headers: { location: "file:///etc/hostname" } }),
+    });
+    const { agent, seen } = pinningAgent();
+    expect(
+      await undiciFetch(`http://scheme.invalid:${origin.port}/`, { dispatcher: agent }).then(
+        () => "resolved",
+        (err: TypeError) => (err.cause as Error).message,
+      ),
+    ).toContain("URL scheme must be http or https");
+    expect(seen).toEqual(["scheme.invalid"]);
+  });
+
   it("request() re-applies the lookup hook across maxRedirections hops", async () => {
     await using target = Bun.serve({
       port: 0,

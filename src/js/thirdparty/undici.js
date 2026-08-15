@@ -144,7 +144,7 @@ function isRedirectStatus(status) {
 // lookup hook sees every hostname; native fetch's own `follow` would resolve
 // redirect targets with the OS resolver, bypassing the hook.
 async function followRedirectsWithConnect(url, init, connect, opts) {
-  let { method, body, headers, limit, redirectError, streamBodyError, lookupError } = opts;
+  let { method, body, headers, limit, redirectError, hopError, lookupError } = opts;
   const { signal } = init;
   method = typeof method === "string" ? method.toUpperCase() : "GET";
   for (let hops = 0; ; ) {
@@ -176,6 +176,11 @@ async function followRedirectsWithConnect(url, init, connect, opts) {
     resp.body?.cancel()?.$then(undefined, () => {});
     if (++hops > limit) throw redirectError();
     const next = new URL(location, url);
+    if (next.protocol !== "http:" && next.protocol !== "https:") {
+      // file:, data: and blob: targets never reach the lookup hook, and native
+      // following rejects them too (UnsupportedRedirectProtocol).
+      throw hopError(`cannot follow the ${status} redirect to ${next.href}: URL scheme must be http or https`);
+    }
     if (next.origin !== url.origin) {
       headers.delete("authorization");
       headers.delete("proxy-authorization");
@@ -196,7 +201,9 @@ async function followRedirectsWithConnect(url, init, connect, opts) {
       headers.delete("content-type");
       headers.delete("content-length");
     } else if (body instanceof ReadableStream) {
-      throw streamBodyError(status, next.href);
+      throw hopError(
+        `cannot follow the ${status} redirect to ${next.href}: the request body is a stream that was already sent; use a buffered body to follow redirects`,
+      );
     }
     url = next;
   }
@@ -242,12 +249,7 @@ async function fetchWithConnect(input, init, connect) {
     headers,
     limit: 20,
     redirectError: () => fetchFailed(new Error("redirect count exceeded")),
-    streamBodyError: (status, href) =>
-      fetchFailed(
-        new Error(
-          `cannot follow the ${status} redirect to ${href}: the request body is a stream that was already sent; use a buffered body to follow redirects`,
-        ),
-      ),
+    hopError: message => fetchFailed(new Error(message)),
     lookupError: fetchLookupError,
   });
 }
@@ -457,10 +459,7 @@ async function request(
       headers: headersFromRequestOptions(inputHeaders),
       limit: maxRedirections,
       redirectError: () => new Error("redirected too many times"),
-      streamBodyError: (status, href) =>
-        new Error(
-          `cannot follow the ${status} redirect to ${href}: the request body is a stream that was already sent; use a buffered body to follow redirects`,
-        ),
+      hopError: message => new Error(message),
       lookupError: err => err,
     });
   } else {
