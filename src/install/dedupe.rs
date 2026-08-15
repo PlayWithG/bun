@@ -631,7 +631,12 @@ fn dedupe_lockfile(lockfile: &mut Lockfile, why: bool) -> Report {
                 for &r in rows {
                     let groups = &mut wanted[r as usize];
                     match groups.iter_mut().find(|(g, _)| strings::eql(g, range)) {
-                        Some((_, owners)) => owners.push(owner as PackageID),
+                        Some((_, owners)) => {
+                            // Two aliases in one package can produce identical edges; list the owner once.
+                            if !owners.contains(&(owner as PackageID)) {
+                                owners.push(owner as PackageID);
+                            }
+                        }
                         None => groups.push((Box::from(range), vec![owner as PackageID])),
                     }
                 }

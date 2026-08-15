@@ -396,6 +396,37 @@ test.concurrent("--why explains a dropped version through its removed dependent"
   expect(await lock(packageDir)).toBe(lockfile);
 });
 
+// Two aliases produce two identical edges from one package; --why lists the dependent once.
+test.concurrent("--why lists a dependent once when two aliases share the same range", async () => {
+  const { packageDir, packageJson } = await registry.createTestDir();
+  const lockfile = await installTwice(
+    packageDir,
+    packageJson,
+    { name: "foo", dependencies: { "one-range-dep": "1.0.0" } },
+    {
+      name: "foo",
+      dependencies: { "one-range-dep": "1.0.0", "nd1": "npm:no-deps@1.0.0", "nd2": "npm:no-deps@1.0.0" },
+    },
+  );
+  expect(lockfile).toContain('"no-deps@1.0.0"');
+  expect(lockfile).toContain('"no-deps@1.1.0"');
+
+  const checked = lockPackageCount(lockfile);
+  const check = await dedupe(packageDir, "--check", "--why");
+  expect(lines(check.stdout)).toStrictEqual([
+    HEADER,
+    "~ no-deps 1.1.0 -> 1.0.0",
+    wanted("^1.0.0", "one-range-dep", "npm:no-deps@1.0.0".length),
+    wanted("npm:no-deps@1.0.0", "foo"),
+    "",
+    wouldRemove(1, checked),
+    HINT,
+  ]);
+  expect(check.stderr).toBe("");
+  expect(check.exitCode).toBe(1);
+  expect(await lock(packageDir)).toBe(lockfile);
+});
+
 test.concurrent("--no-summary keeps the rows and the hint but drops the count line", async () => {
   const { packageDir, packageJson } = await registry.createTestDir();
   const lockBefore = await setupRangeDuplicate(packageDir, packageJson);
