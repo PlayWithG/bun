@@ -2415,11 +2415,11 @@ fn update_package_json_after_migration(
             // `Expr::data_store_reset`).
             let contents: &'static [u8] = js_ast::data_store_dupe_str(&contents);
             let yaml_source = bun_ast::Source::init_path_string(b"pnpm-workspace.yaml", contents);
-            let arena = bun_alloc::Arena::new();
+            // Quoted scalars are copied into the arena; `bump` lives until the print below.
             let Ok(ws_root) = bun_parsers::yaml::YAML::parse(
                 &yaml_source,
                 log,
-                &arena,
+                &bump,
                 bun_parsers::yaml::CyclicAliases::Reject,
             ) else {
                 break 'read_pnpm_workspace_yaml;

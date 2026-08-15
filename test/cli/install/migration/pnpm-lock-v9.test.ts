@@ -2693,6 +2693,33 @@ importers:
       });
     });
 
+    // Unquoted yaml scalars point into the file contents; quoted ones (the usual spelling for scoped names) are
+    // copied into the arena the yaml was parsed with, which has to stay alive until package.json is printed.
+    test.concurrent("quoted pnpm-workspace.yaml scalars are written to package.json", async () => {
+      using dir = tempDir("pnpm-v9-workspace-yaml-quoted", {
+        "package.json": JSON.stringify({ name: "workspace-yaml-quoted" }),
+        "pnpm-workspace.yaml": `overrides:
+  '@scope/pkg': "1.0.0"
+catalog:
+  '@scope/other': '^2.0.0'
+`,
+        "pnpm-lock.yaml": overridesLockfile("  '@scope/pkg': 1.0.0"),
+      });
+
+      const { stderr, exitCode } = await migrate(String(dir));
+
+      expect(stderr).not.toContain("warn:");
+      expect(stderr).toContain(
+        "copied pnpm-workspace.yaml to workspaces, pnpm-workspace.yaml overrides to overrides in package.json",
+      );
+      expect(exitCode).toBe(0);
+      expect(await Bun.file(join(String(dir), "package.json")).json()).toStrictEqual({
+        name: "workspace-yaml-quoted",
+        workspaces: { catalog: { "@scope/other": "^2.0.0" } },
+        overrides: { "@scope/pkg": "1.0.0" },
+      });
+    });
+
     test.concurrent("parent selectors become nested rules", async () => {
       using dir = tempDir("pnpm-v9-overrides-nested", {
         "package.json": JSON.stringify({ name: "overrides-nested" }),
