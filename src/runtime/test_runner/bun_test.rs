@@ -984,8 +984,7 @@ impl BunTest {
         Ok(())
     }
 
-    /// Arms `self.timer` for `min_timeout` unless an earlier deadline is already armed.
-    /// In `Phase::Done` a fire only wakes the loop, which bounds `drain_script_file()`.
+    /// Arms `self.timer` for `min_timeout` unless a sooner deadline is armed; a fire in `Phase::Done` only wakes the loop.
     pub(crate) fn update_min_timeout(&mut self, global_this: &JSGlobalObject, min_timeout: &Timespec) {
         let _g = group_begin!();
         let _ = global_this;

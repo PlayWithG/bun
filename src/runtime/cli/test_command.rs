@@ -920,9 +920,7 @@ fn should_drain_event_loop() -> bool {
     env_var::BUN_TEST_DRAIN_EVENT_LOOP.get().unwrap_or(false)
 }
 
-/// Runs a script-style file's timers and I/O, as `bun <file>` would, until they
-/// finish, one of them throws or rejects, or the test timeout (0 = none) passes.
-/// The file's `BunTest` timer is armed at that deadline so the poll wakes for it.
+/// Runs a bare file's timers and I/O like `bun <file>` until they finish, throw, or the test timeout passes.
 fn drain_script_file(
     reporter: &CommandLineReporter,
     buntest: &bun_test::BunTestPtr,
@@ -937,6 +935,7 @@ fn drain_script_file(
         bun::Timespec::now(bun::TimespecMockMode::ForceRealTime).add_ms(i64::from(timeout_ms))
     });
     if let Some(deadline) = &deadline {
+        // So the poll below wakes at the deadline rather than at the next unrelated timer.
         buntest.get().update_min_timeout(vm.global(), deadline);
     }
     while vm.unhandled_error_counter == errors_before

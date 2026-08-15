@@ -1202,8 +1202,7 @@ impl VirtualMachine {
             || !el.next_immediate_tasks.is_empty()
     }
 
-    /// Whether a ref'd handle, timer or task still holds the loop open. Unlike
-    /// `is_event_loop_alive()` this ignores queued tasks and `unhandled_error_counter`.
+    /// The ref'd-handle terms of `is_event_loop_alive()`, without its task queues or error gate.
     pub fn has_keep_alives(&self) -> bool {
         self.platform_loop_opt().is_some_and(|h| h.is_active())
             || self.active_tasks > 0
