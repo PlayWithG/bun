@@ -2329,6 +2329,21 @@ fn get_or_put_resolved_package(
                                 ..Default::default()
                             }));
                         }
+
+                        if let Some(provider) = find_peer_provider(
+                            this,
+                            &[existing_id],
+                            dependency,
+                            dependency_id,
+                            version,
+                        ) {
+                            success_fn(this, dependency_id, provider);
+                            return Ok(Some(ResolvedPackageResult {
+                                // we must fetch it from the packages array again, incase the package array mutates the value in the `successFn`
+                                package: *this.lockfile.packages.get(provider as usize),
+                                ..Default::default()
+                            }));
+                        }
                     }
                 }
                 PackageIndexEntry::Ids(list) => {
@@ -2380,6 +2395,17 @@ fn get_or_put_resolved_package(
                                 ..Default::default()
                             }));
                         }
+                    }
+
+                    if let Some(provider) =
+                        find_peer_provider(this, list, dependency, dependency_id, version)
+                    {
+                        success_fn(this, dependency_id, provider);
+                        return Ok(Some(ResolvedPackageResult {
+                            // we must fetch it from the packages array again, incase the package array mutates the value in the `successFn`
+                            package: *this.lockfile.packages.get(provider as usize),
+                            ..Default::default()
+                        }));
                     }
                 }
             }
@@ -2692,6 +2718,30 @@ fn get_or_put_resolved_package(
                     }
                 }
 
+                // A `file:` peer reuses the declarer's own dependency on the same folder.
+                if behavior.is_peer() {
+                    let declarer = this.lockfile.declaring_package(dependency_id);
+                    let own = this.lockfile.resolution_of_dependency_named(
+                        declarer,
+                        dependency.name_hash,
+                        dependency_id,
+                        None,
+                    );
+                    let lockfile = &this.lockfile;
+                    if let Some(own_resolution) =
+                        lockfile.packages.items_resolution().get(own as usize)
+                    {
+                        let buf = lockfile.buffers.string_bytes.as_slice();
+                        if own_resolution.eql(
+                            &Resolution::init(ResolutionTagged::Folder(folder)),
+                            buf,
+                            buf,
+                        ) {
+                            break 'res FolderResolutionValue::PackageId(own);
+                        }
+                    }
+                }
+
                 let mut package = Package::default();
 
                 {
@@ -2722,7 +2772,6 @@ fn get_or_put_resolved_package(
                     builder.clamp();
                 }
 
-                // these are always new
                 package = this.lockfile.append_package(&package).unwrap_or_oom();
 
                 break 'res FolderResolutionValue::NewPackageId(package.meta.id);
@@ -2904,6 +2953,61 @@ fn locked_version_in_lockfile<'a>(
         .map(|res| res.npm().version)
         .find(|&locked| range.satisfies(locked, buf, buf))
         .map(|locked| (locked, buf))
+}
+
+/// Non-registry package satisfying an npm-range peer: the declarer's own same-named dependency, else a tarball/git package, else the root's folder/link when the declarer is installed directly under the root.
+fn find_peer_provider(
+    this: &PackageManager,
+    candidates: &[PackageID],
+    dependency: &Dependency,
+    dependency_id: DependencyID,
+    version: &dependency::Version,
+) -> Option<PackageID> {
+    if !matches!(
+        version.tag,
+        dependency::version::Tag::Npm | dependency::version::Tag::DistTag
+    ) {
+        return None;
+    }
+    let lockfile = &this.lockfile;
+    let resolutions = lockfile.packages.items_resolution();
+    // Some(true): installed from the cache, works anywhere; Some(false): a folder/link path that only resolves from the right spot; None: registry, left to the callers' version checks.
+    let usable_anywhere = |package_id: PackageID| {
+        let resolution = resolutions.get(package_id as usize)?;
+        match resolution.tag {
+            ResolutionTag::LocalTarball
+            | ResolutionTag::RemoteTarball
+            | ResolutionTag::Git
+            | ResolutionTag::Github => Some(true),
+            ResolutionTag::Folder | ResolutionTag::Symlink => Some(false),
+            _ => None,
+        }
+    };
+    let declarer = lockfile.declaring_package(dependency_id);
+    // The declarer loads whatever it installs under this name itself, so nothing else can satisfy the peer.
+    let own = lockfile.resolution_of_dependency_named(
+        declarer,
+        dependency.name_hash,
+        dependency_id,
+        None,
+    );
+    if own != invalid_package_id {
+        return (candidates.contains(&own) && usable_anywhere(own).is_some()).then_some(own);
+    }
+    let root_features = this.options.local_package_features;
+    let roots = if lockfile.dedupes_onto_root_dependency(declarer, root_features) {
+        lockfile.resolution_of_dependency_named(
+            0,
+            dependency.name_hash,
+            dependency_id,
+            Some(root_features),
+        )
+    } else {
+        invalid_package_id
+    };
+    candidates.iter().copied().find(|&candidate| {
+        usable_anywhere(candidate).is_some_and(|anywhere| anywhere || candidate == roots)
+    })
 }
 
 fn resolution_satisfies_dependency(
