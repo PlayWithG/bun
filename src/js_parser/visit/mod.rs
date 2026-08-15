@@ -772,10 +772,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
         self.stmts_to_single_stmt(stmt.loc, stmts.into_bump_slice_mut())
     }
 
-    /// Returns the binding the class body's references to the class name were
-    /// resolved to when standard decorator lowering needs one of its own (see
-    /// `declare_inner_class_binding`); the caller hands it to `lower_class`.
-    /// `Ref::NONE` otherwise.
+    /// Returns the `declare_inner_class_binding` the body resolved to (for `lower_class`) or NONE.
     pub(crate) fn visit_class(
         &mut self,
         name_scope_loc: bun_ast::Loc,
@@ -794,8 +791,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
             self.record_declared_symbol(name.ref_);
         }
 
-        // Before the class name scope is pushed: the lowering declares this
-        // symbol in the scope containing the class statement.
+        // Created in the enclosing scope, where the lowering declares it.
         let inner_class_ref = match class.class_name {
             Some(name) if is_stmt && wants_inner_class_binding(class) => {
                 self.declare_inner_class_binding(name.ref_)
@@ -823,10 +819,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
         // must be the original value of the name, not the re-assigned value.
         // Use "const" for this symbol to match JavaScript run-time semantics. You
         // are not allowed to assign to this symbol (it throws a TypeError).
-        //
-        // Unless class decorators are being lowered: they may replace the class,
-        // so the body then resolves to `inner_class_ref`, which the lowering
-        // keeps pointed at the decorated class (`declare_inner_class_binding`).
+        // With lowered class decorators the body resolves to `inner_class_ref` instead.
         if let Some(name) = class.class_name {
             let name_ref = name.ref_;
             shadow_ref.set(name_ref);
@@ -1277,9 +1270,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
             self.enclosing_class_keyword = old_enclosing_class_keyword;
         }
 
-        // If there was originally no class name but something inside needed one
-        // (e.g. there was a static property initializer that referenced "this"),
-        // store our generated name so the class expression ends up with a name.
+        // An anonymous class whose body used the generated name keeps it as its name.
         if class.class_name.is_none()
             && self.symbols[shadow_ref.get().inner_index() as usize].use_count_estimate > 0
         {
