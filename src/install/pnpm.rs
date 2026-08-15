@@ -2371,8 +2371,7 @@ fn update_package_json_after_migration(
 
     let mut copied: Vec<&'static str> = Vec::new();
 
-    // The `pnpm` block is left as it is: pnpm still reads its config from there, and bun
-    // only reads the root-level fields, so the same package.json keeps working for both.
+    // Copied, not moved: pnpm keeps reading this block, bun only reads the root-level fields.
     if let Some(pnpm_prop) = json.as_property(b"pnpm") {
         if pnpm_prop.expr.is_object() {
             let pnpm_obj = e_object(&pnpm_prop.expr);
@@ -2567,9 +2566,8 @@ fn update_package_json_after_migration(
 
     if !copied.is_empty() {
         print_package_json_into_cache_entry(root_pkg_json, json);
-        // The edited tree still points into the previous contents and into Store nodes that
-        // the next `initialize_store()` resets, and the install that follows reads this cache
-        // entry again (`bun update` edits it, `--frozen-lockfile` messages are derived from it).
+        // `bun update` goes on to edit this entry; the tree printed above borrows from the
+        // contents that were just replaced.
         if let Err(err) = root_pkg_json.reparse_root(log) {
             bun_core::pretty_errorln!("package.json failed to parse due to error {}", err.name());
             bun_core::Global::crash();
@@ -2597,9 +2595,7 @@ fn is_non_empty_object(expr: &Expr) -> bool {
     matches!(&expr.data, ExprData::EObject(o) if !o.properties.is_empty())
 }
 
-/// A separate object with the same entries. The root-level copy is edited afterwards
-/// (`rewrite_bare_patch_keys`, entries merged in from pnpm-workspace.yaml), and none of
-/// that may show up in the `pnpm` block it was copied from.
+/// The root-level copy gets edited further; an `Expr` from `get` would alias the `pnpm` block.
 fn copy_object(src: &Expr) -> Expr {
     let src_props = e_object(src).properties.slice();
     let mut properties = G::PropertyList::init_capacity(src_props.len());
@@ -2615,8 +2611,8 @@ fn copy_object(src: &Expr) -> Expr {
     )
 }
 
-/// Adds the entries of `src` to the root-level `field` object, creating it when absent.
-/// Returns `false` when `field` exists but is not an object, in which case nothing is written.
+/// Merges `src` into the root-level `field` object, creating it when absent.
+/// `false` when `field` exists but is not an object; nothing is written then.
 fn copy_into_root(
     json: &mut Expr,
     bump: &bun_alloc::Arena,
