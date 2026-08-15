@@ -333,13 +333,19 @@ pub struct UserRoute<const SSL: bool, const DEBUG: bool> {
 
 impl<const SSL: bool, const DEBUG: bool> Drop for NewServer<SSL, DEBUG> {
     fn drop(&mut self) {
-        // The remaining owned fields (config, base_url, h3_alt_svc, dev_server,
-        // user_routes, all_closed_promise) drop automatically.
         if let Some(p) = self.plugins.take() {
             // SAFETY: `plugins` carries the `heap::alloc` provenance from
             // `ServePlugins::init`; this releases the server's counted ref.
             unsafe { ServePlugins::deref_(p.as_ptr()) };
         }
+        // Still `Some` when the server is dropped without being drained
+        // (listen failure, VM shutdown). `DevServer` is backed by the arena in
+        // `config.bake`, and `config` is declared before `dev_server`, so the
+        // automatic field drops would destroy the arena first and
+        // `DevServer::drop` would then read freed memory.
+        self.dev_server = None;
+        // The remaining owned fields (config, base_url, h3_alt_svc,
+        // user_routes, all_closed_promise) drop automatically.
     }
 }
 

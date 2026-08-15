@@ -3,7 +3,7 @@
 
 use core::ffi::c_int;
 use core::mem::{align_of, size_of};
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use bun_core::{ZStr, env_var, output as Output};
 use bun_paths::MAX_PATH_BYTES;
@@ -53,6 +53,9 @@ pub struct INotifyWatcher {
     read_ptr: Option<ReadPtr>,
 
     pub(crate) watch_count: AtomicU32,
+    /// Set by `wake()`; `read()` checks it after every `Futex::wait_forever`
+    /// so a watcher with nothing to watch exits instead of parking forever.
+    shutdown_requested: AtomicBool,
     /// nanoseconds
     pub(crate) coalesce_interval: isize,
 }
@@ -66,6 +69,7 @@ impl Default for INotifyWatcher {
             eventlist_ptrs: [core::ptr::null(); max_count],
             read_ptr: None,
             watch_count: AtomicU32::new(0),
+            shutdown_requested: AtomicBool::new(false),
             coalesce_interval: 100_000,
         }
     }
@@ -222,11 +226,17 @@ impl INotifyWatcher {
         // of self.eventlist_bytes across the whole function.
         let read_len: usize = if let Some(ptr) = self.read_ptr {
             Futex::wait_forever(&self.watch_count, 0);
+            if self.shutdown_requested.load(Ordering::Acquire) {
+                return Ok(&[]);
+            }
             i = ptr.i;
             ptr.len as usize
         } else {
             'outer: loop {
                 Futex::wait_forever(&self.watch_count, 0);
+                if self.shutdown_requested.load(Ordering::Acquire) {
+                    return Ok(&[]);
+                }
 
                 // SAFETY: fd is a valid inotify fd; buffer is valid for eventlist_bytes.len() bytes.
                 let rc = unsafe {
@@ -364,6 +374,16 @@ impl INotifyWatcher {
             let _ = bun_sys::close(self.fd);
             self.fd = Fd::INVALID;
         }
+    }
+
+    /// Unblocks a watcher thread parked in `Futex::wait_forever` (nothing
+    /// watched yet) so it can observe `Watcher.running == false` and exit.
+    /// Best effort: a thread blocked inside the inotify `read()` itself
+    /// (watches exist) only returns on the next event, as before.
+    pub(crate) fn wake(&self) {
+        self.shutdown_requested.store(true, Ordering::Release);
+        self.watch_count.fetch_add(1, Ordering::Release);
+        Futex::wake(&self.watch_count, u32::MAX);
     }
 }
 
