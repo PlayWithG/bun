@@ -4,19 +4,18 @@ import { expect, test } from "bun:test";
 import { bunEnv, bunExe, isLinux, tempDir } from "harness";
 import path from "node:path";
 
-const fixtureFiles = ["dev-server-port-in-use-fixture.ts", "index-fixture.html", "entry-fixture.ts"];
+const fixtureDir = path.join(import.meta.dir, "fixtures", "watcher-release");
+const fixtureFiles = ["dev-server-teardown-fixture.ts", "index.html", "entry.ts"];
 
 test("tearing down a dev server also tears down its watcher thread", async () => {
   // The fixture modifies one of its own files, so it runs from a scratch copy.
   using dir = tempDir(
-    "21017",
+    "watcher-release",
     Object.fromEntries(
-      await Promise.all(
-        fixtureFiles.map(async name => [name, await Bun.file(path.join(import.meta.dir, name)).text()]),
-      ),
+      await Promise.all(fixtureFiles.map(async name => [name, await Bun.file(path.join(fixtureDir, name)).text()])),
     ),
   );
-  using traceDir = tempDir("21017-trace", {});
+  using traceDir = tempDir("watcher-release-trace", {});
 
   await using proc = Bun.spawn({
     cmd: [bunExe(), fixtureFiles[0]],

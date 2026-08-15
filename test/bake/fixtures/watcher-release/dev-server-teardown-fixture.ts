@@ -1,6 +1,5 @@
-// Run from a scratch copy of this directory: the survivor below rewrites
-// entry-fixture.ts.
-import html from "./index-fixture.html";
+// Run from a scratch copy of this directory: the survivor below rewrites entry.ts.
+import html from "./index.html";
 import { existsSync, readFileSync, readdirSync, readlinkSync, writeFileSync } from "node:fs";
 
 const isLinux = process.platform === "linux";
@@ -110,11 +109,11 @@ async function startSurvivor() {
   return async function finish(): Promise<boolean> {
     let traced = false;
     for (let attempt = 0; !traced && attempt < 10; attempt++) {
-      writeFileSync("./entry-fixture.ts", `document.title = "changed ${attempt}";\n`);
+      writeFileSync("./entry.ts", `document.title = "changed ${attempt}";\n`);
       const until = Date.now() + 200;
       while (!traced && Date.now() < until) {
         await Bun.sleep(20);
-        traced = existsSync(traceFile!) && readFileSync(traceFile!, "utf8").includes("entry-fixture.ts");
+        traced = existsSync(traceFile!) && readFileSync(traceFile!, "utf8").includes("entry.ts");
       }
     }
     await server.stop(true);
