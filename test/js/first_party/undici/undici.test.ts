@@ -237,6 +237,9 @@ describe("undici dispatcher connect.lookup", () => {
     expect(await res.text()).toBe(`${UNRESOLVABLE}:${server.port}`);
     expect(res.status).toBe(200);
     expect(seen).toEqual([UNRESOLVABLE]);
+    // The pinned IP does not leak into the Response.
+    expect(res.url).toBe(`http://${UNRESOLVABLE}:${server.port}/`);
+    expect(res.redirected).toBe(false);
   });
 
   it("fetch fails when the lookup hook reports an error, without contacting the server", async () => {
@@ -347,7 +350,10 @@ describe("undici dispatcher connect.lookup", () => {
   it("the lookup hook sees every redirect hop", async () => {
     await using target = Bun.serve({
       port: 0,
-      fetch: req => new Response(`${req.method} ${req.headers.get("host")}`),
+      fetch: req =>
+        new Response(
+          `${req.method} ${req.headers.get("host")} body-headers=${req.headers.has("content-type") || req.headers.has("content-encoding")}`,
+        ),
     });
     await using origin = Bun.serve({
       port: 0,
@@ -357,11 +363,14 @@ describe("undici dispatcher connect.lookup", () => {
     const res = await undiciFetch(`http://redirect-origin.invalid:${origin.port}/`, {
       dispatcher: agent,
       method: "POST",
+      headers: { "content-encoding": "identity" },
       body: "payload",
     });
-    // 302 + POST becomes GET, like native redirect following.
-    expect(await res.text()).toBe(`GET redirect-target.invalid:${target.port}`);
+    // 302 + POST becomes GET and drops the body headers, like native redirect following.
+    expect(await res.text()).toBe(`GET redirect-target.invalid:${target.port} body-headers=false`);
     expect(seen).toEqual(["redirect-origin.invalid", "redirect-target.invalid"]);
+    expect(res.url).toBe(`http://redirect-target.invalid:${target.port}/`);
+    expect(res.redirected).toBe(true);
   });
 
   it("the lookup hook can veto a redirect hop", async () => {

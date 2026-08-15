@@ -128,9 +128,16 @@ async function followRedirectsWithConnect(url, init, connect, opts) {
     }
     const resp = await nativeFetch(target, { ...init, method, headers: hopHeaders, body, redirect: "manual" });
     const { status } = resp;
-    if (!isRedirectStatus(status)) return resp;
-    const location = resp.headers.get("location");
-    if (location === null) return resp;
+    const location = isRedirectStatus(status) ? resp.headers.get("location") : null;
+    if (location === null) {
+      // The Response was fetched from the pinned IP with redirect: "manual";
+      // report the logical URL and redirect state the caller asked about.
+      ObjectDefineProperty(resp, "url", { __proto__: null, configurable: true, value: url.href });
+      ObjectDefineProperty(resp, "redirected", { __proto__: null, configurable: true, value: hops > 0 });
+      return resp;
+    }
+    // Intermediate response; release its connection now instead of at GC.
+    resp.body?.cancel()?.$then(undefined, () => {});
     if (++hops > limit) throw redirectError();
     const next = new URL(location, url);
     if (next.origin !== url.origin) {
@@ -146,6 +153,10 @@ async function followRedirectsWithConnect(url, init, connect, opts) {
     ) {
       method = "GET";
       body = undefined;
+      // The request-body-header names (https://fetch.spec.whatwg.org/#request-body-header-name).
+      headers.delete("content-encoding");
+      headers.delete("content-language");
+      headers.delete("content-location");
       headers.delete("content-type");
       headers.delete("content-length");
     } else if (body instanceof ReadableStream) {
@@ -176,11 +187,12 @@ async function fetchWithConnect(input, init, connect) {
     if (pin === undefined) return nativeFetch(input, init);
     const headers = new Headers(init?.headers ?? (isRequest ? input.headers : undefined));
     if (!headers.has("host")) headers.set("host", pin.host);
-    if (isRequest) {
-      // Request's constructor reads `input` as an init dict: method/headers/body carry over.
-      return nativeFetch(new Request(pin.url.href, input), { ...init, headers });
-    }
-    return nativeFetch(pin.url.href, { ...init, headers });
+    const resp = isRequest
+      ? // Request's constructor reads `input` as an init dict: method/headers/body carry over.
+        await nativeFetch(new Request(pin.url.href, input), { ...init, headers })
+      : await nativeFetch(pin.url.href, { ...init, headers });
+    ObjectDefineProperty(resp, "url", { __proto__: null, configurable: true, value: url.href });
+    return resp;
   }
   const headers = new Headers(init?.headers ?? (isRequest ? input.headers : undefined));
   const method = init?.method ?? (isRequest ? input.method : "GET");
@@ -398,7 +410,7 @@ async function request(
   let resp;
   if (hasLookup && followRedirects) {
     resp = await followRedirectsWithConnect(
-      typeof url === "string" ? new URL(url) : new URL(url),
+      new URL(url),
       { signal, mode: "cors", keepalive: !reset },
       connect,
       {
