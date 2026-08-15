@@ -417,8 +417,12 @@ pub fn run_tasks<C: RunTasksCallbacks>(
                     .metadata
                     .as_ref()
                     .is_none_or(|metadata| metadata.response.status_code > 399);
+                // Only while resolving: the manifests-only callers (lockfile
+                // migrations, `bun outdated`, ...) have nothing waiting that
+                // could fall back, so for them a failed request is just that.
                 if request_failed
                     && is_extended_manifest
+                    && !C::MANIFESTS_ONLY
                     && manager.fall_back_to_abbreviated_manifest(task.task_id)
                 {
                     let reason = match task.response.metadata.as_ref() {
@@ -440,14 +444,12 @@ pub fn run_tasks<C: RunTasksCallbacks>(
                         bstr::BStr::new(name),
                     );
 
-                    if !C::MANIFESTS_ONLY {
-                        process_manifest_task_queue::<C>(
-                            manager,
-                            task.task_id,
-                            extract_ctx,
-                            install_peer,
-                        )?;
-                    }
+                    process_manifest_task_queue::<C>(
+                        manager,
+                        task.task_id,
+                        extract_ctx,
+                        install_peer,
+                    )?;
                     continue;
                 }
 
