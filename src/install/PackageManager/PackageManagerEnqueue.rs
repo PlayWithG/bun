@@ -1017,12 +1017,13 @@ pub fn enqueue_dependency_with_main_and_success_fn(
                         }
 
                         if !dependency.behavior.is_peer() || install_peer {
-                            if !this.has_created_network_task(
+                            let needs_extended_manifest =
+                                this.needs_extended_manifest(dependency.behavior, task_id);
+                            if !this.has_created_manifest_task(
                                 task_id,
                                 dependency.behavior.is_required(),
+                                needs_extended_manifest,
                             ) {
-                                let needs_extended_manifest =
-                                    this.options.minimum_release_age_ms.is_some();
                                 if this.options.enable.manifest_cache() {
                                     let mut expired = false;
                                     // SAFETY: `this_ptr` is the live exclusive
@@ -2117,6 +2118,10 @@ fn get_or_put_resolved_package_with_find_result(
     let suppress_peer_satisfies = behavior.is_peer()
         && !install_peer
         && !(version.tag == dependency::version::Tag::Npm && version.npm().version.is_star());
+    let npm_resolution = Resolution::init(ResolutionTagged::Npm(ResolutionNpmValue {
+        version: find_result.version,
+        url: find_result.package.tarball_url.value,
+    }));
     if let Some(id) = this.lockfile.get_package_id(
         name_hash,
         if should_update || suppress_peer_satisfies {
@@ -2124,11 +2129,23 @@ fn get_or_put_resolved_package_with_find_result(
         } else {
             Some(version)
         },
-        &Resolution::init(ResolutionTagged::Npm(ResolutionNpmValue {
-            version: find_result.version,
-            url: find_result.package.tarball_url.value,
-        })),
+        &npm_resolution,
     ) {
+        // The existing entry may have been created from the abbreviated
+        // manifest (a regular dependency elsewhere in the tree, or a lockfile
+        // written before `libc` was recorded); this manifest knows the libc.
+        if find_result.package.libc != Npm::Libc::NONE {
+            let buf = this.lockfile.buffers.string_bytes.as_slice();
+            let same_version = this.lockfile.packages.items_resolution()[id as usize].eql(
+                &npm_resolution,
+                buf,
+                buf,
+            );
+            let meta = &mut this.lockfile.packages.items_meta_mut()[id as usize];
+            if same_version && meta.libc == Npm::Libc::NONE {
+                meta.libc = find_result.package.libc;
+            }
+        }
         success_fn(this, dependency_id, id);
         return Ok(Some(ResolvedPackageResult {
             package: *this.lockfile.packages.get(id as usize),
@@ -2184,6 +2201,7 @@ fn get_or_put_resolved_package_with_find_result(
     let result = match determine_preinstall_state(
         this,
         &package,
+        behavior,
         &mut name_and_version_hash,
         &mut patchfile_hash,
     ) {
@@ -2438,7 +2456,10 @@ fn get_or_put_resolved_package(
             // materializing `&mut *this_ptr` after `name_str`/`scope` are
             // derived from it would pop their borrow-stack tags under SB.
             let cache_ctx = this.manifest_disk_cache_ctx();
-            let needs_ext = this.options.minimum_release_age_ms.is_some();
+            let needs_ext = this.needs_extended_manifest(
+                behavior,
+                Task::Id::for_manifest(this.lockfile.str(&name)),
+            );
             let this_ptr: *mut PackageManager = this;
             // SAFETY: `string_bytes` is not resized between here and the
             // `find_result` lookup; `manifest` lives in `this.manifests` and

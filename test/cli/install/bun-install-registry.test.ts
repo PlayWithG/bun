@@ -8,6 +8,7 @@ import {
   bunExe,
   bunEnv as env,
   isFlaky,
+  isLinux,
   isMacOS,
   isWindows,
   mergeWindowEnvs,
@@ -3402,6 +3403,15 @@ test("it should invalid cached package if package.json is missing", async () => 
   ]);
 });
 
+// The dependency set below includes optional-native, whose optional dependencies include
+// native-libc-glibc and native-libc-musl. On Linux the one for the other libc is skipped;
+// elsewhere libc is not filtered.
+const installsWithOptionalNative = isLinux ? 18 : 19;
+const installedCountWithOptionalNative = `${installsWithOptionalNative} packages installed`;
+const checkedCountWithOptionalNative = expect.stringContaining(
+  `Checked ${installsWithOptionalNative} installs across 23 packages (no changes)`,
+);
+
 test("it should install with missing bun.lockb, node_modules, and/or cache", async () => {
   // first clean install
   await writeFile(
@@ -3456,7 +3466,7 @@ test("it should install with missing bun.lockb, node_modules, and/or cache", asy
     expect.stringContaining("+ uses-what-bin@1.5.0"),
     expect.stringContaining("+ what-bin@1.0.0"),
     "",
-    "19 packages installed",
+    installedCountWithOptionalNative,
     "",
     "Blocked 1 postinstall. Run `bun pm untrusted` for details.",
     "",
@@ -3500,7 +3510,7 @@ test("it should install with missing bun.lockb, node_modules, and/or cache", asy
     expect.stringContaining("+ uses-what-bin@1.5.0"),
     expect.stringContaining("+ what-bin@1.0.0"),
     "",
-    "19 packages installed",
+    installedCountWithOptionalNative,
     "",
     "Blocked 1 postinstall. Run `bun pm untrusted` for details.",
     "",
@@ -3546,7 +3556,7 @@ test("it should install with missing bun.lockb, node_modules, and/or cache", asy
     expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
       expect.stringContaining("bun install v1."),
       "",
-      expect.stringContaining("Checked 19 installs across 23 packages (no changes)"),
+      checkedCountWithOptionalNative,
     ]);
 
     expect(await exited).toBe(0);
@@ -3573,7 +3583,7 @@ test("it should install with missing bun.lockb, node_modules, and/or cache", asy
   expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
     expect.stringContaining("bun install v1."),
     "",
-    expect.stringContaining("Checked 19 installs across 23 packages (no changes)"),
+    checkedCountWithOptionalNative,
   ]);
   expect(await exited).toBe(0);
   assertManifestsPopulated(join(packageDir, ".bun-cache"), registryUrl());
@@ -3602,7 +3612,7 @@ test("it should install with missing bun.lockb, node_modules, and/or cache", asy
   expect(out.replace(/\s*\[[0-9\.]+m?s\]\s*$/, "").split(/\r?\n/)).toEqual([
     expect.stringContaining("bun install v1."),
     "",
-    expect.stringContaining("Checked 19 installs across 23 packages (no changes)"),
+    checkedCountWithOptionalNative,
   ]);
 });
 
@@ -6469,7 +6479,7 @@ test("missing package on reinstall, some with binaries", async () => {
     expect.stringContaining("+ uses-what-bin@1.5.0"),
     expect.stringContaining("+ what-bin@1.0.0"),
     "",
-    "19 packages installed",
+    installedCountWithOptionalNative,
     "",
     "Blocked 1 postinstall. Run `bun pm untrusted` for details.",
     "",
