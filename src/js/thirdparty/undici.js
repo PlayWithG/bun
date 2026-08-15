@@ -63,20 +63,25 @@ function runLookup(lookup, hostname, connect, signal) {
       onAbort = () => fail(signal.reason);
       signal.addEventListener("abort", onAbort, { once: true });
     }
-    // The options net.connect passes to a custom lookup (family 0 = any).
-    lookup(hostname, { family: connect.family ?? 0, hints: connect.hints ?? 0, all: false }, (err, address) => {
-      if (err) return fail(err);
-      if ($isArray(address)) {
-        // `all: true` shape: [{ address, family }, ...]
-        address = address.length > 0 ? address[0]?.address : undefined;
-      }
-      if (typeof address !== "string" || isIP(address) === 0) {
-        return fail(
-          new TypeError(`lookup did not return a valid IP address for "${hostname}" (received ${String(address)})`),
-        );
-      }
-      ok(address);
-    });
+    try {
+      // The options net.connect passes to a custom lookup (family 0 = any).
+      lookup(hostname, { family: connect.family ?? 0, hints: connect.hints ?? 0, all: false }, (err, address) => {
+        if (err) return fail(err);
+        if ($isArray(address)) {
+          // `all: true` shape: [{ address, family }, ...]
+          address = address.length > 0 ? address[0]?.address : undefined;
+        }
+        if (typeof address !== "string" || isIP(address) === 0) {
+          return fail(
+            new TypeError(`lookup did not return a valid IP address for "${hostname}" (received ${String(address)})`),
+          );
+        }
+        ok(address);
+      });
+    } catch (e) {
+      // A synchronous throw must still remove the abort listener.
+      fail(e);
+    }
   });
 }
 
