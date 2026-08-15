@@ -37,12 +37,8 @@ function notImplemented() {
   throw new Error("This function is not yet implemented in Bun");
 }
 
-// The `connect.lookup` hook is the only dispatcher connect behaviour
-// implemented: the request is pinned to the address the hook returns (with the
-// original authority sent as the Host header, which native fetch also uses for
-// SNI and certificate verification), so DNS-rebinding protections that
-// pre-resolve the address keep working. Dispatchers without the symbol leave
-// the request unchanged.
+// The shim's dispatchers expose their `connect` options through this symbol;
+// dispatchers without it leave the request unchanged.
 const kConnectFor = Symbol("kConnectFor");
 
 function resolveConnect(dispatcher) {
@@ -56,7 +52,7 @@ function resolveConnect(dispatcher) {
 function runLookup(lookup, hostname, connect) {
   return new Promise((resolve, reject) => {
     // The options net.connect passes to a custom lookup (family 0 = any).
-    lookup(hostname, { family: connect.family ?? 0, hints: connect.hints ?? 0, all: false }, (err, address, family) => {
+    lookup(hostname, { family: connect.family ?? 0, hints: connect.hints ?? 0, all: false }, (err, address) => {
       if (err) return reject(err);
       if ($isArray(address)) {
         // `all: true` shape: [{ address, family }, ...]
@@ -70,9 +66,9 @@ function runLookup(lookup, hostname, connect) {
   });
 }
 
-// Returns { url, host } with `url` pinned to the address from connect.lookup
-// and `host` the original authority for the Host header, or undefined when
-// there is nothing to apply (no lookup hook, or the host is an IP literal).
+// Pins `url` to the address from connect.lookup. `host` is the original
+// authority, sent as the Host header; native fetch also takes SNI and
+// certificate verification from it, so HTTPS still verifies the real hostname.
 async function applyConnect(url, connect) {
   if (typeof connect === "function") {
     throw new NotSupportedError("custom connect functions are not supported in Bun's undici compatibility layer");
@@ -98,9 +94,8 @@ async function fetchWithConnect(input, init, connect) {
     pin = await applyConnect(url, connect);
   } catch (err) {
     if (err instanceof UndiciError) throw err;
-    // The builtins codegen rewrites `new TypeError` to $makeTypeError, which
-    // silently drops the options bag, so define `cause` manually with the same
-    // attributes `new TypeError(msg, { cause })` would produce.
+    // Codegen rewrites `new TypeError` to $makeTypeError, which drops the
+    // options bag, so `cause` is defined manually (same attributes).
     const wrapped = new TypeError("fetch failed");
     ObjectDefineProperty(wrapped, "cause", {
       __proto__: null,
@@ -115,8 +110,7 @@ async function fetchWithConnect(input, init, connect) {
   const headers = new Headers(init?.headers ?? (isRequest ? input.headers : undefined));
   if (!headers.has("host")) headers.set("host", pin.host);
   if (isRequest) {
-    // Re-target the Request at the pinned URL; the constructor copies
-    // method/headers/body from `input` read as an init dict.
+    // Request's constructor reads `input` as an init dict: method/headers/body carry over.
     return nativeFetch(new Request(pin.url.href, input), { ...init, headers });
   }
   return nativeFetch(pin.url.href, { ...init, headers });
