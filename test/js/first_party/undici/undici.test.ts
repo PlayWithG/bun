@@ -344,6 +344,73 @@ describe("undici dispatcher connect.lookup", () => {
     expect(verified).toEqual(["localhost"]);
   });
 
+  it("the lookup hook sees every redirect hop", async () => {
+    await using target = Bun.serve({
+      port: 0,
+      fetch: req => new Response(`${req.method} ${req.headers.get("host")}`),
+    });
+    await using origin = Bun.serve({
+      port: 0,
+      fetch: () => Response.redirect(`http://redirect-target.invalid:${target.port}/`, 302),
+    });
+    const { agent, seen } = pinningAgent();
+    const res = await undiciFetch(`http://redirect-origin.invalid:${origin.port}/`, {
+      dispatcher: agent,
+      method: "POST",
+      body: "payload",
+    });
+    // 302 + POST becomes GET, like native redirect following.
+    expect(await res.text()).toBe(`GET redirect-target.invalid:${target.port}`);
+    expect(seen).toEqual(["redirect-origin.invalid", "redirect-target.invalid"]);
+  });
+
+  it("the lookup hook can veto a redirect hop", async () => {
+    let targetHits = 0;
+    await using target = Bun.serve({
+      port: 0,
+      fetch: () => {
+        targetHits++;
+        return new Response("target");
+      },
+    });
+    await using origin = Bun.serve({
+      port: 0,
+      fetch: () => Response.redirect(`http://blocked.invalid:${target.port}/`, 302),
+    });
+    const agent = new Agent({
+      connect: {
+        lookup: (hostname, _opts, cb) =>
+          hostname === "blocked.invalid" ? cb(new Error("blocked"), "", 0) : cb(null, "127.0.0.1", 4),
+      },
+    });
+    expect(
+      await undiciFetch(`http://ok.invalid:${origin.port}/`, { dispatcher: agent }).then(
+        () => "resolved",
+        (err: TypeError) => (err.cause as Error).message,
+      ),
+    ).toBe("blocked");
+    expect(targetHits).toBe(0);
+  });
+
+  it("request() re-applies the lookup hook across maxRedirections hops", async () => {
+    await using target = Bun.serve({
+      port: 0,
+      fetch: req => new Response(req.headers.get("host") ?? "none"),
+    });
+    await using origin = Bun.serve({
+      port: 0,
+      fetch: () => Response.redirect(`http://hop2.invalid:${target.port}/`, 302),
+    });
+    const { agent, seen } = pinningAgent();
+    const { statusCode, body } = await request(`http://hop1.invalid:${origin.port}/`, {
+      dispatcher: agent,
+      maxRedirections: 5,
+    });
+    expect(await body!.text()).toBe(`hop2.invalid:${target.port}`);
+    expect(statusCode).toBe(200);
+    expect(seen).toEqual(["hop1.invalid", "hop2.invalid"]);
+  });
+
   it("a custom connect function rejects loudly instead of being silently ignored", async () => {
     await using server = Bun.serve({ port: 0, fetch: () => new Response("served") });
     const agent = new Agent({ connect: (() => {}) as any });

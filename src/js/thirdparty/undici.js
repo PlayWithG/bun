@@ -86,34 +86,109 @@ async function applyConnect(url, connect) {
   return { url: pinned, host };
 }
 
+function fetchFailed(cause) {
+  // Codegen rewrites `new TypeError` to $makeTypeError, which drops the
+  // options bag, so `cause` is defined manually (same attributes).
+  const wrapped = new TypeError("fetch failed");
+  ObjectDefineProperty(wrapped, "cause", {
+    __proto__: null,
+    configurable: true,
+    enumerable: false,
+    value: cause,
+    writable: true,
+  });
+  return wrapped;
+}
+
+function isRedirectStatus(status) {
+  return status === 301 || status === 302 || status === 303 || status === 307 || status === 308;
+}
+
+// Follows the redirect chain from here (redirect: "manual" per hop) so the
+// lookup hook sees every hostname; native fetch's own `follow` would resolve
+// redirect targets with the OS resolver, bypassing the hook.
+async function followRedirectsWithConnect(url, init, connect, opts) {
+  let { method, body, headers, limit, redirectError, lookupError } = opts;
+  method = typeof method === "string" ? method.toUpperCase() : "GET";
+  for (let hops = 0; ; ) {
+    let pin;
+    try {
+      pin = await applyConnect(url, connect);
+    } catch (err) {
+      throw lookupError(err);
+    }
+    const hopHeaders = new Headers(headers);
+    let target = url.href;
+    if (pin !== undefined) {
+      target = pin.url.href;
+      if (!hopHeaders.has("host")) hopHeaders.set("host", pin.host);
+    }
+    const resp = await nativeFetch(target, { ...init, method, headers: hopHeaders, body, redirect: "manual" });
+    const { status } = resp;
+    if (!isRedirectStatus(status)) return resp;
+    const location = resp.headers.get("location");
+    if (location === null) return resp;
+    if (++hops > limit) throw redirectError();
+    const next = new URL(location, url);
+    if (next.origin !== url.origin) {
+      headers.delete("authorization");
+      headers.delete("proxy-authorization");
+      headers.delete("cookie");
+    }
+    // A user-supplied Host header only applies to the original authority.
+    headers.delete("host");
+    if ((status === 303 && method !== "GET" && method !== "HEAD") || ((status === 301 || status === 302) && method === "POST")) {
+      method = "GET";
+      body = undefined;
+      headers.delete("content-type");
+      headers.delete("content-length");
+    } else if (body instanceof ReadableStream) {
+      // The previous hop consumed the stream; it cannot be replayed.
+      throw redirectError();
+    }
+    url = next;
+  }
+}
+
+function fetchLookupError(err) {
+  return err instanceof UndiciError ? err : fetchFailed(err);
+}
+
 async function fetchWithConnect(input, init, connect) {
   const isRequest = input instanceof Request;
   const url = new URL(isRequest ? input.url : input);
-  let pin;
-  try {
-    pin = await applyConnect(url, connect);
-  } catch (err) {
-    if (err instanceof UndiciError) throw err;
-    // Codegen rewrites `new TypeError` to $makeTypeError, which drops the
-    // options bag, so `cause` is defined manually (same attributes).
-    const wrapped = new TypeError("fetch failed");
-    ObjectDefineProperty(wrapped, "cause", {
-      __proto__: null,
-      configurable: true,
-      enumerable: false,
-      value: err,
-      writable: true,
-    });
-    throw wrapped;
+  const redirectMode = init?.redirect ?? (isRequest ? input.redirect : undefined) ?? "follow";
+  if (redirectMode !== "follow") {
+    // "manual" returns the 3xx and "error" rejects natively; neither follows
+    // a redirect, so only the first hop needs pinning.
+    let pin;
+    try {
+      pin = await applyConnect(url, connect);
+    } catch (err) {
+      throw fetchLookupError(err);
+    }
+    if (pin === undefined) return nativeFetch(input, init);
+    const headers = new Headers(init?.headers ?? (isRequest ? input.headers : undefined));
+    if (!headers.has("host")) headers.set("host", pin.host);
+    if (isRequest) {
+      // Request's constructor reads `input` as an init dict: method/headers/body carry over.
+      return nativeFetch(new Request(pin.url.href, input), { ...init, headers });
+    }
+    return nativeFetch(pin.url.href, { ...init, headers });
   }
-  if (pin === undefined) return nativeFetch(input, init);
   const headers = new Headers(init?.headers ?? (isRequest ? input.headers : undefined));
-  if (!headers.has("host")) headers.set("host", pin.host);
-  if (isRequest) {
-    // Request's constructor reads `input` as an init dict: method/headers/body carry over.
-    return nativeFetch(new Request(pin.url.href, input), { ...init, headers });
-  }
-  return nativeFetch(pin.url.href, { ...init, headers });
+  const method = init?.method ?? (isRequest ? input.method : "GET");
+  // Buffer a Request body so 307/308 hops can replay it.
+  const body = init?.body !== undefined ? init.body : isRequest && input.body != null ? await input.arrayBuffer() : undefined;
+  const signal = init?.signal ?? (isRequest ? input.signal : undefined);
+  return followRedirectsWithConnect(url, { ...init, signal }, connect, {
+    method,
+    body,
+    headers,
+    limit: 20,
+    redirectError: () => fetchFailed(new Error("redirect count exceeded")),
+    lookupError: fetchLookupError,
+  });
 }
 
 function fetch(input, init) {
@@ -305,28 +380,46 @@ async function request(
 
   const followRedirects = maxRedirections != null && maxRedirections > 0;
 
-  let requestHeaders = inputHeaders || kEmptyObject;
   const connect = resolveConnect(dispatcher);
-  if (connect != null) {
-    const pin = await applyConnect(typeof url === "string" ? new URL(url) : url, connect);
-    if (pin !== undefined) {
-      url = pin.url;
-      requestHeaders = new Headers(requestHeaders);
-      if (!requestHeaders.has("host")) requestHeaders.set("host", pin.host);
-    }
-  }
+  const hasLookup = connect != null && (typeof connect === "function" || typeof connect.lookup === "function");
 
   /** @type {Response} */
-  const resp = await nativeFetch(url, {
-    signal,
-    mode: "cors",
-    method,
-    headers: requestHeaders,
-    body: inputBody,
-    redirect: followRedirects ? "follow" : "manual",
-    maxRedirects: followRedirects ? maxRedirections : undefined,
-    keepalive: !reset,
-  });
+  let resp;
+  if (hasLookup && followRedirects) {
+    resp = await followRedirectsWithConnect(
+      typeof url === "string" ? new URL(url) : new URL(url),
+      { signal, mode: "cors", keepalive: !reset },
+      connect,
+      {
+        method,
+        body: inputBody,
+        headers: new Headers(inputHeaders || kEmptyObject),
+        limit: maxRedirections,
+        redirectError: () => new Error("redirected too many times"),
+        lookupError: err => err,
+      },
+    );
+  } else {
+    let requestHeaders = inputHeaders || kEmptyObject;
+    if (hasLookup) {
+      const pin = await applyConnect(typeof url === "string" ? new URL(url) : url, connect);
+      if (pin !== undefined) {
+        url = pin.url;
+        requestHeaders = new Headers(requestHeaders);
+        if (!requestHeaders.has("host")) requestHeaders.set("host", pin.host);
+      }
+    }
+    resp = await nativeFetch(url, {
+      signal,
+      mode: "cors",
+      method,
+      headers: requestHeaders,
+      body: inputBody,
+      redirect: followRedirects ? "follow" : "manual",
+      maxRedirects: followRedirects ? maxRedirections : undefined,
+      keepalive: !reset,
+    });
+  }
 
   const { status: statusCode, headers, trailers } = resp;
 
