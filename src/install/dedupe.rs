@@ -310,8 +310,7 @@ pub(crate) fn label(lockfile: &Lockfile, id: PackageID) -> Vec<u8> {
 
 const MAX_DEPENDENTS_SHOWN: usize = 3;
 
-// Formats one row's `--why` groups: most dependents first, dependents in name order,
-// versioned labels only where the name alone is ambiguous (several versions in the lockfile).
+// Biggest group first, dependents in name order, versioned only when the name alone is ambiguous.
 fn format_wanted(
     lockfile: &Lockfile,
     group_of: &[u32],
@@ -596,8 +595,7 @@ fn dedupe_lockfile(lockfile: &mut Lockfile, why: bool) -> Report {
 
     let names = lockfile.packages.items_name();
 
-    // Per row: the dependents whose edges targeted the removed version or one of its
-    // survivors, grouped by the (effective) range they asked for.
+    // Per row: dependents whose edges targeted the removed version or one of its survivors, by requested range.
     let mut wanted: Vec<Vec<(Box<[u8]>, Vec<PackageID>)>> = vec![Vec::new(); removed.len()];
     if why {
         let deps = lockfile.buffers.dependencies.as_slice();
