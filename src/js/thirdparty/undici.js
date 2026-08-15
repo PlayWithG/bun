@@ -409,19 +409,14 @@ async function request(
   /** @type {Response} */
   let resp;
   if (hasLookup && followRedirects) {
-    resp = await followRedirectsWithConnect(
-      new URL(url),
-      { signal, mode: "cors", keepalive: !reset },
-      connect,
-      {
-        method,
-        body: inputBody,
-        headers: new Headers(inputHeaders || kEmptyObject),
-        limit: maxRedirections,
-        redirectError: () => new Error("redirected too many times"),
-        lookupError: err => err,
-      },
-    );
+    resp = await followRedirectsWithConnect(new URL(url), { signal, mode: "cors", keepalive: !reset }, connect, {
+      method,
+      body: inputBody,
+      headers: new Headers(inputHeaders || kEmptyObject),
+      limit: maxRedirections,
+      redirectError: () => new Error("redirected too many times"),
+      lookupError: err => err,
+    });
   } else {
     let requestHeaders = inputHeaders || kEmptyObject;
     if (hasLookup) {
