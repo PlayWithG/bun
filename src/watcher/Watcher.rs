@@ -346,9 +346,6 @@ impl Watcher {
         // argument is still protected is UB under Stacked Borrows / Tree Borrows.
         let owner_still_alive = unsafe { (*this).thread_body() };
 
-        // Close trace file if open
-        WatcherTrace::deinit();
-
         Output::flush();
 
         if !owner_still_alive {

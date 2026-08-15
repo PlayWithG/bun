@@ -1,7 +1,10 @@
+// Run from a scratch copy of this directory: the survivor below rewrites
+// entry-fixture.ts.
 import html from "./index-fixture.html";
-import { readFileSync, readdirSync, readlinkSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, readlinkSync, writeFileSync } from "node:fs";
 
 const isLinux = process.platform === "linux";
+const traceFile = process.env.BUN_WATCHER_TRACE;
 
 function threadCount(): number {
   const m = readFileSync("/proc/self/status", "utf8").match(/Threads:\s*(\d+)/);
@@ -40,13 +43,22 @@ async function measure(body: () => Promise<void>): Promise<Deltas | null> {
   const threadsBefore = threadCount();
   const inotifyBefore = inotifyFdCount();
   await body();
-  const deadline = Date.now() + 2000;
+  const deadline = Date.now() + 1000;
   let deltas: Deltas;
   while (true) {
     deltas = { threads: threadCount() - threadsBefore, inotify: inotifyFdCount() - inotifyBefore };
     if ((deltas.threads <= 0 && deltas.inotify <= 0) || Date.now() > deadline) return deltas;
     await Bun.sleep(20);
   }
+}
+
+function serve() {
+  return Bun.serve({
+    port: 0,
+    development: true,
+    routes: { "/": html },
+    fetch: () => new Response("unreachable"),
+  });
 }
 
 // The issue's scenario: the dev server fails to listen, so its watcher is torn
@@ -74,12 +86,7 @@ async function listenFailures(): Promise<void> {
 }
 
 async function serveOnce(): Promise<void> {
-  const server = Bun.serve({
-    port: 0,
-    development: true,
-    routes: { "/": html },
-    fetch: () => new Response("unreachable"),
-  });
+  const server = serve();
   const response = await fetch(server.url);
   if (response.status !== 200) throw new Error(`expected 200 from the dev server, got ${response.status}`);
   await response.arrayBuffer();
@@ -94,11 +101,34 @@ async function servedThenStopped(): Promise<void> {
   }
 }
 
-const listenFail = await measure(listenFailures);
-// The first bundle starts the bundler thread pool, which stays alive; keep it
-// out of the measured window.
-await serveOnce();
-const served = await measure(servedThenStopped);
+// A dev server that stays up while the others are torn down. Afterwards a change
+// to one of its files must still reach BUN_WATCHER_TRACE, which every watcher in
+// the process shares.
+async function startSurvivor() {
+  const server = serve();
+  await (await fetch(server.url)).arrayBuffer();
+  return async function finish(): Promise<boolean> {
+    let traced = false;
+    for (let attempt = 0; !traced && attempt < 10; attempt++) {
+      writeFileSync("./entry-fixture.ts", `document.title = "changed ${attempt}";\n`);
+      const until = Date.now() + 200;
+      while (!traced && Date.now() < until) {
+        await Bun.sleep(20);
+        traced = existsSync(traceFile!) && readFileSync(traceFile!, "utf8").includes("entry-fixture.ts");
+      }
+    }
+    await server.stop(true);
+    return traced;
+  };
+}
 
-if (isLinux) console.log(JSON.stringify({ listenFail, served }));
+const listenFail = await measure(listenFailures);
+const finishSurvivor = isLinux && traceFile ? await startSurvivor() : null;
+// The first bundle also starts the bundler thread pool, which stays alive, so
+// it has to happen before the measured window below.
+if (!finishSurvivor) await serveOnce();
+const served = await measure(servedThenStopped);
+const survivorTraced = finishSurvivor ? await finishSurvivor() : null;
+
+if (isLinux) console.log(JSON.stringify({ listenFail, served, survivorTraced }));
 console.log("PASS");
