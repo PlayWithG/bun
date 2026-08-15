@@ -528,9 +528,9 @@ describe("undici dispatcher connect.lookup", () => {
     expect(statusCode).toBe(200);
 
     // One past the limit rejects.
-    await expect(
-      request(`http://chain.invalid:${port}/0`, { dispatcher: agent, maxRedirections: 1 }),
-    ).rejects.toThrow("redirected too many times");
+    await expect(request(`http://chain.invalid:${port}/0`, { dispatcher: agent, maxRedirections: 1 })).rejects.toThrow(
+      "redirected too many times",
+    );
   });
 
   it("URLs without a network authority skip the hook", async () => {

@@ -243,7 +243,11 @@ async function fetchWithConnect(input, init, connect) {
     limit: 20,
     redirectError: () => fetchFailed(new Error("redirect count exceeded")),
     streamBodyError: (status, href) =>
-      fetchFailed(new Error(`cannot follow the ${status} redirect to ${href}: the request body is a stream that was already sent; use a buffered body to follow redirects`)),
+      fetchFailed(
+        new Error(
+          `cannot follow the ${status} redirect to ${href}: the request body is a stream that was already sent; use a buffered body to follow redirects`,
+        ),
+      ),
     lookupError: fetchLookupError,
   });
 }
@@ -454,7 +458,9 @@ async function request(
       limit: maxRedirections,
       redirectError: () => new Error("redirected too many times"),
       streamBodyError: (status, href) =>
-        new Error(`cannot follow the ${status} redirect to ${href}: the request body is a stream that was already sent; use a buffered body to follow redirects`),
+        new Error(
+          `cannot follow the ${status} redirect to ${href}: the request body is a stream that was already sent; use a buffered body to follow redirects`,
+        ),
       lookupError: err => err,
     });
   } else {
