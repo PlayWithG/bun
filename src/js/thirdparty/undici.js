@@ -1,12 +1,14 @@
 const EventEmitter = require("node:events");
 const StreamModule = require("node:stream");
 const { Readable } = StreamModule;
+const { isIP } = require("node:net");
 const { _ReadableFromWeb: ReadableFromWeb } = require("internal/webstreams_adapters");
 
 const ObjectCreate = Object.create;
+const ObjectDefineProperty = Object.defineProperty;
 const kEmptyObject = ObjectCreate(null);
 
-var fetch = Bun.fetch;
+const nativeFetch = Bun.fetch;
 const bindings = $cpp("Undici.cpp", "createUndiciInternalBinding");
 const Response = bindings[0];
 const Request = bindings[1];
@@ -34,6 +36,102 @@ class FileReader extends EventTarget {
 function notImplemented() {
   throw new Error("This function is not yet implemented in Bun");
 }
+
+// The `connect.lookup` hook is the only dispatcher connect behaviour
+// implemented: the request is pinned to the address the hook returns (with the
+// original authority sent as the Host header, which native fetch also uses for
+// SNI and certificate verification), so DNS-rebinding protections that
+// pre-resolve the address keep working. Dispatchers without the symbol leave
+// the request unchanged.
+const kConnectFor = Symbol("kConnectFor");
+
+function resolveConnect(dispatcher) {
+  if (dispatcher == null) dispatcher = getGlobalDispatcher();
+  if (dispatcher != null && typeof dispatcher[kConnectFor] === "function") {
+    return dispatcher[kConnectFor]();
+  }
+  return undefined;
+}
+
+function runLookup(lookup, hostname, connect) {
+  return new Promise((resolve, reject) => {
+    // The options net.connect passes to a custom lookup (family 0 = any).
+    lookup(hostname, { family: connect.family ?? 0, hints: connect.hints ?? 0, all: false }, (err, address, family) => {
+      if (err) return reject(err);
+      if ($isArray(address)) {
+        // `all: true` shape: [{ address, family }, ...]
+        address = address.length > 0 ? address[0]?.address : undefined;
+      }
+      if (typeof address !== "string" || isIP(address) === 0) {
+        return reject(new TypeError(`lookup did not return a valid IP address for "${hostname}"`));
+      }
+      resolve(address);
+    });
+  });
+}
+
+// Returns { url, host } with `url` pinned to the address from connect.lookup
+// and `host` the original authority for the Host header, or undefined when
+// there is nothing to apply (no lookup hook, or the host is an IP literal).
+async function applyConnect(url, connect) {
+  if (typeof connect === "function") {
+    throw new NotSupportedError("custom connect functions are not supported in Bun's undici compatibility layer");
+  }
+  const lookup = connect.lookup;
+  if (typeof lookup !== "function") return undefined;
+  const { hostname } = url;
+  // URL#hostname keeps the brackets on IPv6 literals.
+  const bare = hostname.charCodeAt(0) === 0x5b /* [ */ ? hostname.slice(1, -1) : hostname;
+  if (isIP(bare) !== 0) return undefined;
+  const address = await runLookup(lookup, bare, connect);
+  const host = url.host;
+  const pinned = new URL(url);
+  pinned.hostname = isIP(address) === 6 ? `[${address}]` : address;
+  return { url: pinned, host };
+}
+
+async function fetchWithConnect(input, init, connect) {
+  const isRequest = input instanceof Request;
+  const url = new URL(isRequest ? input.url : input);
+  let pin;
+  try {
+    pin = await applyConnect(url, connect);
+  } catch (err) {
+    if (err instanceof UndiciError) throw err;
+    // The builtins codegen rewrites `new TypeError` to $makeTypeError, which
+    // silently drops the options bag, so define `cause` manually with the same
+    // attributes `new TypeError(msg, { cause })` would produce.
+    const wrapped = new TypeError("fetch failed");
+    ObjectDefineProperty(wrapped, "cause", {
+      __proto__: null,
+      configurable: true,
+      enumerable: false,
+      value: err,
+      writable: true,
+    });
+    throw wrapped;
+  }
+  if (pin === undefined) return nativeFetch(input, init);
+  const headers = new Headers(init?.headers ?? (isRequest ? input.headers : undefined));
+  if (!headers.has("host")) headers.set("host", pin.host);
+  if (isRequest) {
+    // Re-target the Request at the pinned URL; the constructor copies
+    // method/headers/body from `input` read as an init dict.
+    return nativeFetch(new Request(pin.url.href, input), { ...init, headers });
+  }
+  return nativeFetch(pin.url.href, { ...init, headers });
+}
+
+function fetch(input, init) {
+  try {
+    const connect = resolveConnect(init?.dispatcher);
+    if (connect == null) return nativeFetch(input, init);
+    return fetchWithConnect(input, init, connect);
+  } catch (e) {
+    return Promise.$reject(e);
+  }
+}
+fetch.preconnect = nativeFetch.preconnect;
 
 /**
  * An object representing a URL.
@@ -168,7 +266,7 @@ async function request(
     throwOnError = false,
     body: inputBody,
     maxRedirections,
-    // dispatcher,
+    dispatcher,
   } = options;
 
   // TODO: More validations
@@ -213,12 +311,23 @@ async function request(
 
   const followRedirects = maxRedirections != null && maxRedirections > 0;
 
+  let requestHeaders = inputHeaders || kEmptyObject;
+  const connect = resolveConnect(dispatcher);
+  if (connect != null) {
+    const pin = await applyConnect(typeof url === "string" ? new URL(url) : url, connect);
+    if (pin !== undefined) {
+      url = pin.url;
+      requestHeaders = new Headers(requestHeaders);
+      if (!requestHeaders.has("host")) requestHeaders.set("host", pin.host);
+    }
+  }
+
   /** @type {Response} */
-  const resp = await fetch(url, {
+  const resp = await nativeFetch(url, {
     signal,
     mode: "cors",
     method,
-    headers: inputHeaders || kEmptyObject,
+    headers: requestHeaders,
     body: inputBody,
     redirect: followRedirects ? "follow" : "manual",
     maxRedirects: followRedirects ? maxRedirections : undefined,
@@ -263,7 +372,22 @@ class MockAgent {
 function mockErrors() {}
 
 class Dispatcher extends EventEmitter {}
-class Agent extends Dispatcher {}
+class Agent extends Dispatcher {
+  #connect;
+
+  constructor(opts) {
+    super();
+    const connect = opts?.connect;
+    if (connect != null && typeof connect !== "function" && typeof connect !== "object") {
+      throw new InvalidArgumentError("connect must be a function or an object");
+    }
+    this.#connect = connect ?? undefined;
+  }
+
+  [kConnectFor]() {
+    return this.#connect;
+  }
+}
 class Pool extends Dispatcher {
   request() {}
 }

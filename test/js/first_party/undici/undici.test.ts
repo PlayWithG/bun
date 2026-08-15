@@ -1,5 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { request } from "undici";
+import {
+  Agent,
+  errors,
+  fetch as undiciFetch,
+  getGlobalDispatcher,
+  request,
+  request as request,
+  setGlobalDispatcher,
+} from "undici";
+import { tls as tlsCert } from "harness";
 
 import { createServer } from "../../../http-test-server";
 
@@ -205,5 +214,158 @@ describe("undici.request maxRedirections", () => {
     } finally {
       server.stop(true);
     }
+  });
+});
+
+describe("undici dispatcher connect.lookup", () => {
+  // Reserved TLD (RFC 2606): guaranteed not to resolve, so reaching the local
+  // server proves the lookup hook supplied the address.
+  const UNRESOLVABLE = "this-host-does-not-exist.invalid";
+
+  function pinningAgent(address = "127.0.0.1") {
+    const seen: string[] = [];
+    const agent = new Agent({
+      connect: {
+        lookup: (hostname, _opts, cb) => {
+          seen.push(hostname);
+          cb(null, address, 4);
+        },
+      },
+    });
+    return { agent, seen };
+  }
+
+  it("fetch connects to the address returned by the lookup hook", async () => {
+    await using server = Bun.serve({
+      port: 0,
+      fetch: req => new Response(req.headers.get("host") ?? "none"),
+    });
+    const { agent, seen } = pinningAgent();
+    const res = await undiciFetch(`http://${UNRESOLVABLE}:${server.port}/`, { dispatcher: agent });
+    expect(await res.text()).toBe(`${UNRESOLVABLE}:${server.port}`);
+    expect(res.status).toBe(200);
+    expect(seen).toEqual([UNRESOLVABLE]);
+  });
+
+  it("fetch fails when the lookup hook reports an error, without contacting the server", async () => {
+    let hits = 0;
+    await using server = Bun.serve({
+      port: 0,
+      fetch: () => {
+        hits++;
+        return new Response("served");
+      },
+    });
+    const agent = new Agent({
+      connect: {
+        lookup: (_hostname, _opts, cb) => cb(new Error("blocked by rebinding protection"), "", 0),
+      },
+    });
+    expect(
+      await undiciFetch(`http://localhost:${server.port}/`, { dispatcher: agent }).then(
+        () => "resolved",
+        (err: TypeError) => (err.cause as Error).message,
+      ),
+    ).toBe("blocked by rebinding protection");
+    expect(hits).toBe(0);
+  });
+
+  it("lookup hook is skipped for IP literals", async () => {
+    await using server = Bun.serve({ port: 0, fetch: () => new Response("direct") });
+    const { agent, seen } = pinningAgent("192.0.2.1");
+    const res = await undiciFetch(`http://127.0.0.1:${server.port}/`, { dispatcher: agent });
+    expect(await res.text()).toBe("direct");
+    expect(seen).toEqual([]);
+  });
+
+  it("lookup hook may return the all:true address-array shape", async () => {
+    await using server = Bun.serve({ port: 0, fetch: () => new Response("array") });
+    const agent = new Agent({
+      connect: {
+        lookup: (_hostname, _opts, cb) => cb(null, [{ address: "127.0.0.1", family: 4 }] as any, undefined as any),
+      },
+    });
+    const res = await undiciFetch(`http://${UNRESOLVABLE}:${server.port}/`, { dispatcher: agent });
+    expect(await res.text()).toBe("array");
+  });
+
+  it("the global dispatcher's lookup hook is honored", async () => {
+    await using server = Bun.serve({ port: 0, fetch: () => new Response("global") });
+    const previous = getGlobalDispatcher();
+    setGlobalDispatcher(pinningAgent().agent);
+    try {
+      const res = await undiciFetch(`http://${UNRESOLVABLE}:${server.port}/`);
+      expect(await res.text()).toBe("global");
+    } finally {
+      setGlobalDispatcher(previous);
+    }
+  });
+
+  it("fetch with a Request input keeps method, headers and body through the pin", async () => {
+    await using server = Bun.serve({
+      port: 0,
+      fetch: async req => new Response(`${req.method} ${req.headers.get("x-probe")} ${await req.text()}`),
+    });
+    const { agent } = pinningAgent();
+    const req = new Request(`http://${UNRESOLVABLE}:${server.port}/`, {
+      method: "POST",
+      headers: { "x-probe": "yes" },
+      body: "hello",
+    });
+    const res = await undiciFetch(req, { dispatcher: agent });
+    expect(await res.text()).toBe("POST yes hello");
+  });
+
+  it("request() honors the dispatcher's lookup hook", async () => {
+    await using server = Bun.serve({
+      port: 0,
+      fetch: req => new Response(req.headers.get("host") ?? "none"),
+    });
+    const { agent, seen } = pinningAgent();
+    const { statusCode, body } = await request(`http://${UNRESOLVABLE}:${server.port}/`, { dispatcher: agent });
+    expect(await body!.text()).toBe(`${UNRESOLVABLE}:${server.port}`);
+    expect(statusCode).toBe(200);
+    expect(seen).toEqual([UNRESOLVABLE]);
+  });
+
+  it("https: the pin keeps the original hostname for SNI and certificate verification", async () => {
+    await using server = Bun.serve({
+      port: 0,
+      tls: tlsCert,
+      fetch: req => new Response(req.headers.get("host") ?? "none"),
+    });
+    const { agent, seen } = pinningAgent();
+    const verified: string[] = [];
+    const res = await undiciFetch(`https://localhost:${server.port}/`, {
+      dispatcher: agent,
+      // @ts-expect-error Bun-specific fetch option
+      tls: {
+        ca: tlsCert.cert,
+        checkServerIdentity: (hostname: string) => {
+          verified.push(hostname);
+          return undefined;
+        },
+      },
+    });
+    expect(await res.text()).toBe(`localhost:${server.port}`);
+    expect(seen).toEqual(["localhost"]);
+    expect(verified).toEqual(["localhost"]);
+  });
+
+  it("a custom connect function rejects loudly instead of being silently ignored", async () => {
+    await using server = Bun.serve({ port: 0, fetch: () => new Response("served") });
+    const agent = new Agent({ connect: (() => {}) as any });
+    expect(
+      await undiciFetch(`http://localhost:${server.port}/`, { dispatcher: agent }).then(
+        () => "resolved",
+        err => (err instanceof errors.NotSupportedError ? "NotSupportedError" : String(err)),
+      ),
+    ).toBe("NotSupportedError");
+  });
+
+  it("an Agent without connect options leaves requests untouched", async () => {
+    await using server = Bun.serve({ port: 0, fetch: () => new Response("plain") });
+    const res = await undiciFetch(`http://127.0.0.1:${server.port}/`, { dispatcher: new Agent() });
+    expect(await res.text()).toBe("plain");
   });
 });
