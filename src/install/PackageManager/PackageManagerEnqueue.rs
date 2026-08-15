@@ -1122,8 +1122,10 @@ pub fn enqueue_dependency_with_main_and_success_fn(
                                                     .flatten()
                                                 {
                                                     resolve_result_ = Ok(Some(new_resolve_result));
-                                                    let _ =
-                                                        this.network_dedupe_map.remove(&task_id);
+                                                    this.manifest_request_not_sent(
+                                                        task_id,
+                                                        needs_extended_manifest,
+                                                    );
                                                     continue 'retry_with_new_resolve_result;
                                                 }
                                             }
@@ -1132,7 +1134,10 @@ pub fn enqueue_dependency_with_main_and_success_fn(
                                         // Was it recent enough to just load it without the network call?
                                         if this.options.enable.manifest_cache_control() && !expired
                                         {
-                                            let _ = this.network_dedupe_map.remove(&task_id);
+                                            this.manifest_request_not_sent(
+                                                task_id,
+                                                needs_extended_manifest,
+                                            );
                                             continue 'retry_from_manifests_ptr;
                                         }
                                     }
