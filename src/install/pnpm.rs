@@ -2566,8 +2566,7 @@ fn update_package_json_after_migration(
 
     if !copied.is_empty() {
         print_package_json_into_cache_entry(root_pkg_json, json);
-        // `bun update` goes on to edit this entry; the tree printed above borrows from the
-        // contents that were just replaced.
+        // The printed tree borrows from the replaced contents; `bun update` edits this entry next.
         if let Err(err) = root_pkg_json.reparse_root(log) {
             bun_core::pretty_errorln!("package.json failed to parse due to error {}", err.name());
             bun_core::Global::crash();
@@ -2611,8 +2610,7 @@ fn copy_object(src: &Expr) -> Expr {
     )
 }
 
-/// Merges `src` into the root-level `field` object, creating it when absent.
-/// `false` when `field` exists but is not an object; nothing is written then.
+/// Merges `src` into the root-level `field` (created when absent); `false` if it is not an object.
 fn copy_into_root(
     json: &mut Expr,
     bump: &bun_alloc::Arena,
