@@ -285,6 +285,12 @@ function headersFromRawHeaders(rawHeaders) {
   return headers;
 }
 
+function parseOrigin(origin) {
+  const url = origin instanceof URL ? origin : new URL(String(origin));
+  if (url.pathname !== "/" || url.search || url.hash) throw new InvalidArgumentError("invalid url");
+  return url;
+}
+
 function headersFromDispatchOpts(headers) {
   if (headers == null) return undefined;
   if ($isJSArray(headers)) {
@@ -471,6 +477,12 @@ function fetchDispatch(origin, opts, handler, pending) {
 // dispatcher.request() body: a Readable with undici's body-mixin methods.
 class DispatchBodyReadable extends Readable {
   #used = false;
+  #contentType;
+
+  constructor(options, contentType) {
+    super(options);
+    this.#contentType = contentType;
+  }
 
   get bodyUsed() {
     return this.#used || Readable.isDisturbed(this);
@@ -503,6 +515,30 @@ class DispatchBodyReadable extends Readable {
 
   async blob() {
     return new Blob([await this.#consume()]);
+  }
+
+  async formData() {
+    const buf = await this.#consume();
+    const headers = this.#contentType ? { "content-type": String(this.#contentType) } : undefined;
+    return await new Response(buf, { headers }).formData();
+  }
+
+  // undici's discard idiom: read and drop the body, destroying past the limit.
+  async dump(opts) {
+    const limit = opts?.limit ?? 131072;
+    this.#used = true;
+    let read = 0;
+    try {
+      for await (const chunk of this) {
+        read += chunk.length;
+        if (read > limit) {
+          this.destroy();
+          break;
+        }
+      }
+    } catch {
+      // dump() resolves regardless of how the body ends, like undici
+    }
   }
 }
 
@@ -574,19 +610,23 @@ class Dispatcher extends EventEmitter {
             return true;
           }
           resumeBody = resume;
-          body = new DispatchBodyReadable({
-            read() {
-              resumeBody();
+          const headers = headersFromRawHeaders(rawHeaders);
+          body = new DispatchBodyReadable(
+            {
+              read() {
+                resumeBody();
+              },
+              destroy(err, cb) {
+                // Early body.destroy() cancels the request so the dispatch loop is not left parked.
+                if (!completed) abortBody?.(err ?? undefined);
+                cb(err);
+              },
             },
-            destroy(err, cb) {
-              // Early body.destroy() cancels the request so the dispatch loop is not left parked.
-              if (!completed) abortBody?.(err ?? undefined);
-              cb(err);
-            },
-          });
+            headers["content-type"],
+          );
           callback(null, {
             statusCode,
-            headers: headersFromRawHeaders(rawHeaders),
+            headers,
             body,
             trailers,
             opaque: opts.opaque ?? null,
@@ -711,7 +751,7 @@ class Agent extends DispatcherBase {
 
   [kDispatch](opts, handler) {
     if (!opts.origin) throw new InvalidArgumentError("opts.origin must be a non-empty string or URL.");
-    return fetchDispatch(opts.origin, opts, handler, this[kPending]);
+    return fetchDispatch(parseOrigin(opts.origin), opts, handler, this[kPending]);
   }
 }
 
@@ -721,7 +761,7 @@ class Pool extends DispatcherBase {
   constructor(origin, _options) {
     super();
     if (origin == null) throw new InvalidArgumentError("Origin must be a string or URL.");
-    this.#origin = origin instanceof URL ? origin : new URL(String(origin));
+    this.#origin = parseOrigin(origin);
   }
 
   [kDispatch](opts, handler) {
@@ -734,9 +774,7 @@ class BalancedPool extends DispatcherBase {
 
   constructor(upstreams = [], _options) {
     super();
-    this.#upstreams = ($isJSArray(upstreams) ? upstreams : [upstreams]).map(upstream =>
-      upstream instanceof URL ? upstream : new URL(String(upstream)),
-    );
+    this.#upstreams = ($isJSArray(upstreams) ? upstreams : [upstreams]).map(parseOrigin);
   }
 
   [kDispatch](opts, handler) {
@@ -752,7 +790,7 @@ class Client extends DispatcherBase {
   constructor(origin, _options) {
     super();
     if (origin == null) throw new InvalidArgumentError("Origin must be a string or URL.");
-    this.#origin = origin instanceof URL ? origin : new URL(String(origin));
+    this.#origin = parseOrigin(origin);
   }
 
   [kDispatch](opts, handler) {
@@ -1109,6 +1147,7 @@ function fetchViaDispatcher(dispatcher, input, init) {
               });
             }
             // Construct before flipping resolved so a non-constructible status rejects the fetch promise.
+            // Known gap: the Response constructor cannot set url/redirected/type, so this branch reports url === "".
             const response = new Response(responseBody, { status: statusCode, statusText, headers: responseHeaders });
             resolved = true;
             resolve(response);
@@ -1116,7 +1155,8 @@ function fetchViaDispatcher(dispatcher, input, init) {
           },
           onData: chunk => {
             if (!streamController) return true;
-            streamController.enqueue(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+            // Copy: the dispatch contract only guarantees the chunk during the callback.
+            streamController.enqueue(new Uint8Array(chunk));
             return streamController.desiredSize > 0;
           },
           onComplete: () => {
@@ -1134,9 +1174,10 @@ function fetchViaDispatcher(dispatcher, input, init) {
 }
 
 function fetch(input, init) {
-  const dispatcher = init?.dispatcher;
+  // Raw module-local on purpose: nativeFetch stays the fast path until setGlobalDispatcher() installs one.
+  const dispatcher = init?.dispatcher ?? globalDispatcher;
   if (dispatcher && typeof dispatcher.dispatch === "function") {
-    return fetchViaDispatcher(dispatcher, input, init);
+    return fetchViaDispatcher(dispatcher, input, init ?? kEmptyObject);
   }
   return nativeFetch(input, init);
 }

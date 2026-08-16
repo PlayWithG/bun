@@ -9,6 +9,7 @@ import {
   errors,
   getGlobalDispatcher,
   request,
+  setGlobalDispatcher,
   fetch as undiciFetch,
 } from "undici";
 
@@ -655,6 +656,75 @@ describe("undici", () => {
       const req = new Request("http://localhost:1/", { redirect: "error" });
       await expect(undiciFetch(req, { dispatcher } as any)).rejects.toBeInstanceOf(TypeError);
       await pool.destroy();
+    });
+
+    it("fetch routes through the global dispatcher when none is passed", async () => {
+      await using target = Bun.serve({
+        port: 0,
+        fetch: () => new Response("via-global"),
+      });
+      const pool = new Pool(`http://localhost:${target.port}`);
+      const prev = getGlobalDispatcher();
+      setGlobalDispatcher({ dispatch: (opts: any, handler: any) => pool.dispatch(opts, handler) } as any);
+      try {
+        const res = await undiciFetch("http://localhost:1/x");
+        expect(await res.text()).toBe("via-global");
+      } finally {
+        setGlobalDispatcher(prev);
+        await pool.close();
+      }
+    });
+
+    it("request() body formData() parses using the response content-type", async () => {
+      const fd = new FormData();
+      fd.append("foo", "bar");
+      const encoded = new Response(fd);
+      const contentType = encoded.headers.get("content-type")!;
+      const bytes = await encoded.bytes();
+      class FormDataDispatcher extends Dispatcher {
+        dispatch(_opts: any, handler: any) {
+          handler.onConnect(() => {});
+          handler.onHeaders(200, [Buffer.from("content-type"), Buffer.from(contentType)], () => {}, "OK");
+          handler.onData(Buffer.from(bytes));
+          handler.onComplete([]);
+          return true;
+        }
+      }
+      const { body } = await new FormDataDispatcher().request({ path: "/", method: "GET" });
+      const parsed = await body.formData();
+      expect(parsed.get("foo")).toBe("bar");
+    });
+
+    it("request() body dump() discards the body", async () => {
+      const pool = new Pool(hostUrl);
+      const { body } = await pool.request({ path: "/get", method: "GET" });
+      await body.dump();
+      expect(body.bodyUsed).toBe(true);
+      await expect(body.text()).rejects.toThrow("unusable");
+      await pool.close();
+    });
+
+    it("constructors reject origins carrying a path, query, or hash", () => {
+      expect(() => new Pool("http://localhost:3000/api")).toThrow(errors.InvalidArgumentError);
+      expect(() => new Client("http://localhost:3000/?q=1")).toThrow(errors.InvalidArgumentError);
+    });
+
+    it("fetch with dispatcher copies body chunks from the dispatcher", async () => {
+      const buf = Buffer.alloc(4);
+      const dispatcher = {
+        dispatch(_opts: any, handler: any) {
+          handler.onConnect(() => {});
+          handler.onHeaders(200, [], () => {}, "OK");
+          buf.write("AAAA");
+          handler.onData(buf);
+          buf.write("BBBB");
+          handler.onData(buf);
+          handler.onComplete([]);
+          return true;
+        },
+      };
+      const res = await undiciFetch("http://localhost:1/", { dispatcher } as any);
+      expect(await res.text()).toBe("AAAABBBB");
     });
 
     it("RetryAgent.close() closes the wrapped dispatcher", async () => {
