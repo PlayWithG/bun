@@ -4224,16 +4224,16 @@ fn on_structured_clone_deserialize<B: AsRef<[u8]>>(
         blob.content_type_was_set.set(content_type_was_set);
     }
 
+    // Version 1 payloads predate the serialized is_jsdom_file byte.
+    if version < 2 && blob.needs_to_read_file() {
+        blob.is_jsdom_file.set(true);
+    }
+
     let blob_ptr = scopeguard::ScopeGuard::into_inner(blob_guard);
     // SAFETY: blob_ptr is valid; to_js is infallible. Spelled
-    // `BlobExt::to_js(..)` to pick the `&self` impl over the by-value
-    // `JsClass::to_js`.
-    let blob_ref = unsafe { &*blob_ptr };
-    // Version 1 payloads predate the serialized is_jsdom_file byte.
-    if version < 2 && blob_ref.needs_to_read_file() {
-        blob_ref.is_jsdom_file.set(true);
-    }
-    Ok(BlobExt::to_js(blob_ref, global_this))
+    // `BlobExt::to_js(&*blob_ptr, ..)` to pick the `&self` impl over the
+    // by-value `JsClass::to_js`.
+    Ok(unsafe { BlobExt::to_js(&*blob_ptr, global_this) })
 }
 
 // ──────────────────────────────────────────────────────────────────────────
