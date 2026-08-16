@@ -718,9 +718,11 @@ describe("undici", () => {
           return true;
         }
       }
-      await expect(new CompletesEarly().request({ path: "/", method: "GET" })).rejects.toThrow(
+      const reqBody = Readable.from(["x"]);
+      await expect(new CompletesEarly().request({ path: "/", method: "POST", body: reqBody })).rejects.toThrow(
         "onHeaders must be called before onComplete",
       );
+      expect(reqBody.destroyed).toBe(true);
     });
 
     it("fetch rejects when the dispatcher completes without a response", async () => {

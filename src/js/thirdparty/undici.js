@@ -645,12 +645,11 @@ class Dispatcher extends EventEmitter {
           completed = true;
           removeSignal();
           if (body === null) {
-            callback(
-              new TypeError("request completed without a response: onHeaders must be called before onComplete"),
-              {
-                opaque,
-              },
+            const err = new TypeError(
+              "request completed without a response: onHeaders must be called before onComplete",
             );
+            destroyRequestBody(err);
+            callback(err, { opaque });
             return;
           }
           if (rawTrailers && rawTrailers.length) Object.assign(trailers, headersFromRawHeaders(rawTrailers));
