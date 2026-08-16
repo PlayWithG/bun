@@ -881,6 +881,65 @@ Date)
         `,
       );
     });
+    it("helper function reached through another tail call", async () => {
+      await tester.test(
+        v => /*js*/ `
+          function inner(value) {
+            return expect(value).toMatchInlineSnapshot(${v("", bad, '`"nested"`')});
+          }
+          function outer(value) {
+            return inner(value);
+          }
+          test("nested helpers", () => {
+            outer("nested");
+          });
+        `,
+      );
+    });
+    it("helper function mixed with direct calls", async () => {
+      await tester.test(
+        v => /*js*/ `
+          function snap(value) {
+            return expect(value).toMatchInlineSnapshot(${v("", bad, '`"helper"`')});
+          }
+          test("mixed", () => {
+            expect("before").toMatchInlineSnapshot(${v("", bad, '`"before"`')});
+            snap("helper");
+            expect("after").toMatchInlineSnapshot(${v("", bad, '`"after"`')});
+          });
+        `,
+      );
+    });
+    it("matcher name also appears in the argument", async () => {
+      await tester.test(
+        v => /*js*/ `
+          function snap() {
+            return expect(".toMatchInlineSnapshot(" /* .toMatchInlineSnapshot(\`\`) */).toMatchInlineSnapshot(${v("", bad, '`".toMatchInlineSnapshot("`')});
+          }
+          test("decoy", () => {
+            snap();
+          });
+        `,
+      );
+    });
+    it("helper function called with different values", async () => {
+      // Both calls resolve to the helper's line, so this is the same conflict as
+      // "should error trying to update the same line twice" above.
+      await tester.testError(
+        {
+          msg: "error: Failed to update inline snapshot: Multiple inline snapshots on the same line must all have the same value",
+        },
+        /*js*/ `
+          function snap(value) {
+            return expect(value).toMatchInlineSnapshot();
+          }
+          test("conflict", () => {
+            snap("a");
+            snap("b");
+          });
+        `,
+      );
+    });
     it("helper function in another file is still rejected", async () => {
       await tester.testError(
         {
@@ -1042,14 +1101,27 @@ test("error snapshots", () => {
   expect(() => {
     throw undefined; // this one doesn't work in jest because it doesn't think the function threw
   }).toThrowErrorMatchingInlineSnapshot(`undefined`);
-  expect(() => {
-    expect(() => {}).toThrowErrorMatchingInlineSnapshot(`undefined`);
-  }).toThrowErrorMatchingInlineSnapshot(`
+  // The matcher error is coloured only when colours are enabled (CI sets FORCE_COLOR=1, a local
+  // `bun bd test` does not).
+  if (Bun.enableANSIColors) {
+    expect(() => {
+      expect(() => {}).toThrowErrorMatchingInlineSnapshot(`undefined`);
+    }).toThrowErrorMatchingInlineSnapshot(`
 "\x1B[2mexpect(\x1B[0m\x1B[31mreceived\x1B[0m\x1B[2m).\x1B[0mtoThrowErrorMatchingInlineSnapshot\x1B[2m(\x1B[0m\x1B[2m)\x1B[0m
 
 \x1B[1mMatcher error\x1B[0m: Received function did not throw
 "
 `);
+  } else {
+    expect(() => {
+      expect(() => {}).toThrowErrorMatchingInlineSnapshot(`undefined`);
+    }).toThrowErrorMatchingInlineSnapshot(`
+"expect(received).toThrowErrorMatchingInlineSnapshot()
+
+Matcher error: Received function did not throw
+"
+`);
+  }
 });
 test("error inline snapshots", () => {
   expect(() => {
