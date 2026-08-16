@@ -278,6 +278,14 @@ function appendHeader(headers, name, value) {
   else headers[name] = [existing, String(value)];
 }
 
+function headersFromRawHeaders(rawHeaders) {
+  const headers = ObjectCreate(null);
+  for (let i = 0; i + 1 < rawHeaders.length; i += 2) {
+    appendHeader(headers, String(rawHeaders[i]).toLowerCase(), String(rawHeaders[i + 1]));
+  }
+  return headers;
+}
+
 function headersFromDispatchOpts(headers) {
   if (headers == null) return undefined;
   if ($isJSArray(headers)) {
@@ -367,10 +375,12 @@ function fetchDispatch(origin, opts, handler, pending) {
   }
 
   // Tracked so the dispatcher can drain in-flight requests on close() and abort them on destroy().
-  const entry = { abort, done: null };
+  // done exists before any handler callback runs, so close() from onConnect still waits for this request.
+  let resolveDone;
+  const entry = { abort, done: new Promise(r => (resolveDone = r)) };
   pending?.add(entry);
 
-  entry.done = (async () => {
+  (async () => {
     const path = opts.path || "/";
     if (typeof path !== "string" || path.charCodeAt(0) !== 0x2f /* '/' */) {
       throw new InvalidArgumentError("path must start with '/'");
@@ -458,6 +468,7 @@ function fetchDispatch(origin, opts, handler, pending) {
     })
     .finally(() => {
       pending?.delete(entry);
+      resolveDone();
       if (!onSignalAbort) return;
       if (typeof signal.removeEventListener === "function") signal.removeEventListener("abort", onSignalAbort);
       else if (typeof signal.removeListener === "function") signal.removeListener("abort", onSignalAbort);
@@ -562,6 +573,12 @@ class Dispatcher extends EventEmitter {
           }
         },
         onHeaders: (statusCode, rawHeaders, resume, _statusText) => {
+          // 1xx informational responses precede the final onHeaders, like undici.
+          if (statusCode < 200) {
+            if (typeof opts.onInfo === "function")
+              opts.onInfo({ statusCode, headers: headersFromRawHeaders(rawHeaders) });
+            return true;
+          }
           resumeBody = resume;
           body = new DispatchBodyReadable({
             read() {
@@ -573,13 +590,9 @@ class Dispatcher extends EventEmitter {
               cb(err);
             },
           });
-          const headers = ObjectCreate(null);
-          for (let i = 0; i + 1 < rawHeaders.length; i += 2) {
-            appendHeader(headers, String(rawHeaders[i]).toLowerCase(), String(rawHeaders[i + 1]));
-          }
           callback(null, {
             statusCode,
-            headers,
+            headers: headersFromRawHeaders(rawHeaders),
             body,
             trailers: { __proto__: null },
             opaque: opts.opaque ?? null,
@@ -775,6 +788,14 @@ class RetryAgent extends DispatcherBase {
 
   [kDispatch](opts, handler) {
     return this.#agent.dispatch(opts, handler);
+  }
+
+  get closed() {
+    return this.#agent.closed;
+  }
+
+  get destroyed() {
+    return this.#agent.destroyed;
   }
 
   close(callback) {
@@ -1016,6 +1037,7 @@ function fetchViaDispatcher(dispatcher, input, init) {
           abortDispatch = abort;
         },
         onHeaders: (statusCode, rawHeaders, resume, statusText) => {
+          if (statusCode < 200) return true;
           resumeData = resume;
           const responseHeaders = [];
           for (let i = 0; i + 1 < rawHeaders.length; i += 2) {
@@ -1036,8 +1058,10 @@ function fetchViaDispatcher(dispatcher, input, init) {
               },
             });
           }
+          // Construct before flipping resolved so a non-constructible status rejects the fetch promise.
+          const response = new Response(responseBody, { status: statusCode, statusText, headers: responseHeaders });
           resolved = true;
-          resolve(new Response(responseBody, { status: statusCode, statusText, headers: responseHeaders }));
+          resolve(response);
           return true;
         },
         onData: chunk => {

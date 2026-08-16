@@ -568,6 +568,65 @@ describe("undici", () => {
       const retry = new RetryAgent(agent);
       await retry.close();
       expect(agent.closed).toBe(true);
+      expect(retry.closed).toBe(true);
+    });
+
+    it("close() called from onConnect still waits for the request", async () => {
+      const pool = new Pool(hostUrl);
+      const events: string[] = [];
+      let closed: Promise<unknown> | undefined;
+      const completed = new Promise<void>((resolve, reject) => {
+        pool.dispatch(
+          { path: "/get", method: "GET" },
+          {
+            onConnect: () => {
+              closed = pool.close().then(() => events.push("closed"));
+            },
+            onHeaders: () => true,
+            onData: () => true,
+            onComplete: () => {
+              events.push("complete");
+              resolve();
+            },
+            onError: reject,
+          },
+        );
+      });
+      await Promise.all([completed, closed!]);
+      expect(events).toEqual(["complete", "closed"]);
+    });
+
+    it("request() skips 1xx informational responses", async () => {
+      class Informational extends Dispatcher {
+        dispatch(_opts: any, handler: any) {
+          handler.onConnect(() => {});
+          handler.onHeaders(100, [], () => {}, "Continue");
+          handler.onHeaders(200, [Buffer.from("content-type"), Buffer.from("text/plain")], () => {}, "OK");
+          handler.onData(Buffer.from("hi"));
+          handler.onComplete([]);
+          return true;
+        }
+      }
+      const infos: number[] = [];
+      const { statusCode, body } = await new Informational().request({
+        path: "/",
+        method: "GET",
+        onInfo: (info: { statusCode: number }) => infos.push(info.statusCode),
+      });
+      expect(statusCode).toBe(200);
+      expect(await body.text()).toBe("hi");
+      expect(infos).toEqual([100]);
+    });
+
+    it("fetch with dispatcher rejects on a non-constructible status instead of hanging", async () => {
+      const dispatcher = {
+        dispatch(_opts: any, handler: any) {
+          handler.onConnect(() => {});
+          handler.onHeaders(600, [], () => {}, "Weird");
+          return true;
+        },
+      };
+      await expect(undiciFetch("http://localhost:1/", { dispatcher } as any)).rejects.toBeInstanceOf(RangeError);
     });
 
     it("close(callback) invokes the callback", async () => {
