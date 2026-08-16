@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { Readable } from "node:stream";
-import { Agent, Client, Pool, RetryAgent, errors, getGlobalDispatcher, request, fetch as undiciFetch } from "undici";
+import { Agent, Client, Dispatcher, Pool, RetryAgent, errors, getGlobalDispatcher, request, fetch as undiciFetch } from "undici";
 
 import { createServer } from "../../../http-test-server";
 
@@ -510,6 +510,47 @@ describe("undici", () => {
       } as any);
       expect(await res.text()).toBe("echo:hello");
       await pool.close();
+    });
+
+    it("async failures reach onResponseError on legacy-shaped handlers without onError", async () => {
+      const pool = new Pool("http://127.0.0.1:1");
+      const err = await new Promise<any>((resolve, reject) => {
+        pool.dispatch(
+          { path: "/", method: "GET" },
+          {
+            onHeaders: () => reject(new Error("should not receive headers")),
+            onData: () => {},
+            onComplete: () => reject(new Error("should not complete")),
+            onResponseError: (_controller: any, e: Error) => resolve(e),
+          },
+        );
+      });
+      expect(err).toBeInstanceOf(Error);
+      await pool.destroy();
+    });
+
+    it("request() destroys a stream body when dispatch fails", async () => {
+      const pool = new Pool(hostUrl);
+      await pool.close();
+      const reqBody = Readable.from(["x"]);
+      await expect(pool.request({ path: "/post", method: "POST", body: reqBody })).rejects.toBeInstanceOf(
+        errors.ClientClosedError,
+      );
+      expect(reqBody.destroyed).toBe(true);
+    });
+
+    it("request({ signal }) cancels through a user Dispatcher subclass", async () => {
+      class NeverResponds extends Dispatcher {
+        dispatch(_opts: any, handler: any) {
+          // A compliant dispatch() never reads opts.signal; it only hands out abort.
+          handler.onConnect((reason?: Error) => handler.onError(reason ?? new Error("aborted")));
+          return true;
+        }
+      }
+      const ac = new AbortController();
+      const pending = new NeverResponds().request({ path: "/", method: "GET", signal: ac.signal });
+      ac.abort();
+      await expect(pending).rejects.toHaveProperty("name", "AbortError");
     });
 
     it("RetryAgent.close() closes the wrapped dispatcher", async () => {

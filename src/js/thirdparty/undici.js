@@ -447,15 +447,14 @@ function fetchDispatch(origin, opts, handler, pending) {
     .catch(err => {
       // Cancel the response body when a handler callback threw before the body loop.
       if (!aborted) ac.abort(err);
-      if (isControllerStyle && typeof handler.onResponseError === "function") {
-        handler.onResponseError(controller, err);
-        return;
+      try {
+        if (isControllerStyle && typeof handler.onResponseError === "function")
+          handler.onResponseError(controller, err);
+        else if (typeof handler.onError === "function") handler.onError(err);
+        else if (typeof handler.onResponseError === "function") handler.onResponseError(controller, err);
+      } catch {
+        // A throwing error callback must not become an unhandled rejection.
       }
-      if (typeof handler.onError === "function") {
-        handler.onError(err);
-        return;
-      }
-      throw err;
     })
     .finally(() => {
       pending?.delete(entry);
@@ -534,10 +533,33 @@ class Dispatcher extends EventEmitter {
     let resumeBody = null;
     let abortBody = null;
     let completed = false;
+    const reqBody = opts.body;
+    const signal = opts.signal;
+    let onSignalAbort = null;
+    const removeSignal = () => {
+      if (!onSignalAbort) return;
+      if (typeof signal.removeEventListener === "function") signal.removeEventListener("abort", onSignalAbort);
+      else if (typeof signal.removeListener === "function") signal.removeListener("abort", onSignalAbort);
+      onSignalAbort = null;
+    };
+    const destroyRequestBody = err => {
+      if (reqBody && typeof reqBody.destroy === "function" && !reqBody.destroyed) {
+        if (typeof reqBody.on === "function") reqBody.on("error", () => {});
+        reqBody.destroy(err);
+      }
+    };
     try {
       this.dispatch(opts, {
         onConnect: abort => {
           abortBody = abort;
+          // Wired here because DispatchOptions has no signal field; user dispatch() implementations never see it.
+          if (signal) {
+            onSignalAbort = () => abort(signal.reason);
+            if (signal.aborted) onSignalAbort();
+            else if (typeof signal.addEventListener === "function")
+              signal.addEventListener("abort", onSignalAbort, { once: true });
+            else if (typeof signal.on === "function") signal.on("abort", onSignalAbort);
+          }
         },
         onHeaders: (statusCode, rawHeaders, resume, _statusText) => {
           resumeBody = resume;
@@ -568,16 +590,21 @@ class Dispatcher extends EventEmitter {
         onData: chunk => body.push(chunk),
         onComplete: () => {
           completed = true;
+          removeSignal();
           body.push(null);
         },
         onError: err => {
           completed = true;
+          removeSignal();
+          destroyRequestBody(err);
           if (body) body.destroy(err);
           else callback(err, null);
         },
       });
     } catch (err) {
       // Only reached when dispatch() itself throws without consulting onError.
+      removeSignal();
+      destroyRequestBody(err);
       if (body) body.destroy(err);
       else callback(err, null);
     }
