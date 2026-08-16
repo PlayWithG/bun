@@ -1146,8 +1146,7 @@ function fetchViaDispatcher(dispatcher, input, init) {
                 },
               });
             }
-            // Construct before flipping resolved so a non-constructible status rejects the fetch promise.
-            // Known gap: the Response constructor cannot set url/redirected/type, so this branch reports url === "".
+            // Built before flipping resolved so a non-constructible status rejects; url/redirected stay unset (constructor limitation).
             const response = new Response(responseBody, { status: statusCode, statusText, headers: responseHeaders });
             resolved = true;
             resolve(response);
