@@ -658,6 +658,35 @@ describe("undici", () => {
       await pool.destroy();
     });
 
+    it("getGlobalDispatcher() does not reroute bare fetch", async () => {
+      await using server = Bun.serve({
+        port: 0,
+        fetch: () => new Response("native"),
+      });
+      getGlobalDispatcher();
+      const res = await undiciFetch(`http://localhost:${server.port}/x`);
+      // nativeFetch populates res.url; the shim dispatcher path cannot.
+      expect(res.url).toBe(`http://localhost:${server.port}/x`);
+      expect(await res.text()).toBe("native");
+    });
+
+    it("request(cb) delivers opaque on the error path", async () => {
+      const pool = new Pool(hostUrl);
+      await pool.close();
+      const { promise, resolve } = Promise.withResolvers<{ err: any; data: any }>();
+      pool.request({ path: "/", method: "GET", opaque: { reqId: 42 } }, (err: any, data: any) =>
+        resolve({ err, data }),
+      );
+      const { err, data } = await promise;
+      expect(err.code).toBe("UND_ERR_DESTROYED");
+      expect(data.opaque).toEqual({ reqId: 42 });
+    });
+
+    it("fetch with dispatcher rejects invalid URLs instead of throwing", async () => {
+      const dispatcher = { dispatch: () => true };
+      await expect(undiciFetch("not a url", { dispatcher } as any)).rejects.toBeInstanceOf(TypeError);
+    });
+
     it("fetch routes through the global dispatcher when none is passed", async () => {
       await using target = Bun.serve({
         port: 0,

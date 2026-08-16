@@ -564,9 +564,10 @@ class Dispatcher extends EventEmitter {
     }
     if (typeof callback !== "function") throw new InvalidArgumentError("invalid callback");
     if (!opts || typeof opts !== "object") {
-      queueMicrotask(() => callback(new InvalidArgumentError("opts must be an object."), null));
+      queueMicrotask(() => callback(new InvalidArgumentError("opts must be an object."), { opaque: opts?.opaque }));
       return;
     }
+    const opaque = opts.opaque ?? null;
 
     let body = null;
     let resumeBody = null;
@@ -632,7 +633,7 @@ class Dispatcher extends EventEmitter {
             headers,
             body,
             trailers,
-            opaque: opts.opaque ?? null,
+            opaque,
             context,
           });
           return true;
@@ -649,14 +650,14 @@ class Dispatcher extends EventEmitter {
           removeSignal();
           destroyRequestBody(err);
           if (body) body.destroy(err);
-          else callback(err, null);
+          else callback(err, { opaque });
         },
       });
     } catch (err) {
       removeSignal();
       destroyRequestBody(err);
       if (body) body.destroy(err);
-      else if (!completed) callback(err, null);
+      else if (!completed) callback(err, { opaque });
     }
   }
 }
@@ -994,6 +995,7 @@ function serializeAMimeType() {
 }
 
 let globalDispatcher;
+let defaultGlobalAgent;
 
 // Add missing dispatcher functions
 function setGlobalDispatcher(dispatcher) {
@@ -1004,7 +1006,8 @@ function setGlobalDispatcher(dispatcher) {
 }
 
 function getGlobalDispatcher() {
-  return (globalDispatcher ??= new Agent());
+  // The lazy default lives apart from globalDispatcher so calling this never reroutes bare fetch().
+  return globalDispatcher ?? (defaultGlobalAgent ??= new Agent());
 }
 
 // Add missing origin functions
@@ -1040,34 +1043,39 @@ function buildConnector(_options = {}) {
 // fetch with { dispatcher } routes through dispatcher.dispatch(); miniflare relies on this to reach workerd.
 function fetchViaDispatcher(dispatcher, input, init) {
   let url, method, headers, body, signal, redirect;
-  if (input instanceof Request) {
-    url = new URL(input.url);
-    method = init.method ?? input.method;
-    headers = init.headers ?? input.headers;
-    body = init.body ?? input.body;
-    signal = init.signal ?? input.signal;
-    redirect = init.redirect ?? input.redirect ?? "follow";
-  } else {
-    url = input instanceof URL ? input : new URL(String(input));
-    method = init.method ?? "GET";
-    headers = init.headers;
-    body = init.body;
-    signal = init.signal;
-    redirect = init.redirect ?? "follow";
-  }
-  if (headers instanceof Headers) headers = headers.toJSON();
-  method = method ? String(method) : "GET";
-  // WHATWG fetch normalizes only these six methods; others keep their case.
-  const upper = method.toUpperCase();
-  if (
-    upper === "DELETE" ||
-    upper === "GET" ||
-    upper === "HEAD" ||
-    upper === "OPTIONS" ||
-    upper === "POST" ||
-    upper === "PUT"
-  ) {
-    method = upper;
+  // Input parsing failures reject the returned promise like WHATWG fetch, never throw synchronously.
+  try {
+    if (input instanceof Request) {
+      url = new URL(input.url);
+      method = init.method ?? input.method;
+      headers = init.headers ?? input.headers;
+      body = init.body ?? input.body;
+      signal = init.signal ?? input.signal;
+      redirect = init.redirect ?? input.redirect ?? "follow";
+    } else {
+      url = input instanceof URL ? input : new URL(String(input));
+      method = init.method ?? "GET";
+      headers = init.headers;
+      body = init.body;
+      signal = init.signal;
+      redirect = init.redirect ?? "follow";
+    }
+    if (headers instanceof Headers) headers = headers.toJSON();
+    method = method ? String(method) : "GET";
+    // WHATWG fetch normalizes only these six methods; others keep their case.
+    const upper = method.toUpperCase();
+    if (
+      upper === "DELETE" ||
+      upper === "GET" ||
+      upper === "HEAD" ||
+      upper === "OPTIONS" ||
+      upper === "POST" ||
+      upper === "PUT"
+    ) {
+      method = upper;
+    }
+  } catch (err) {
+    return Promise.reject(err);
   }
 
   return new Promise((resolve, reject) => {
