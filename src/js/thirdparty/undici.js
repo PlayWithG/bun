@@ -287,6 +287,8 @@ function headersFromRawHeaders(rawHeaders) {
 
 function parseOrigin(origin) {
   const url = origin instanceof URL ? origin : new URL(String(origin));
+  if (url.protocol !== "http:" && url.protocol !== "https:")
+    throw new InvalidArgumentError("Invalid URL protocol: the URL must start with `http:` or `https:`.");
   if (url.pathname !== "/" || url.search || url.hash) throw new InvalidArgumentError("invalid url");
   return url;
 }
@@ -589,6 +591,12 @@ class Dispatcher extends EventEmitter {
         reqBody.destroy(err);
       }
     };
+    if (signal?.aborted) {
+      const err = signal.reason ?? new RequestAbortedError("Request aborted");
+      destroyRequestBody(err);
+      queueMicrotask(() => callback(err, { opaque }));
+      return;
+    }
     const trailers = ObjectCreate(null);
     let context = null;
     try {
@@ -1085,6 +1093,8 @@ function fetchViaDispatcher(dispatcher, input, init) {
     ) {
       method = upper;
     }
+    // A pre-aborted signal rejects before the dispatcher is ever invoked, like WHATWG fetch.
+    if (signal?.aborted) throw signal.reason ?? new DOMException("The operation was aborted.", "AbortError");
   } catch (err) {
     return Promise.reject(err);
   }

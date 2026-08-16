@@ -314,6 +314,39 @@ describe("undici", () => {
       await pool.destroy();
     });
 
+    it("request rejects a pre-aborted signal without dispatching", async () => {
+      let dispatched = false;
+      const dispatcher = new (class extends Dispatcher {
+        dispatch() {
+          dispatched = true;
+          return true;
+        }
+      })();
+      const ac = new AbortController();
+      ac.abort();
+      await expect(
+        dispatcher.request({ origin: "http://localhost:1", path: "/", method: "GET", signal: ac.signal }),
+      ).rejects.toHaveProperty("name", "AbortError");
+      expect(dispatched).toBe(false);
+    });
+
+    it("fetch with a dispatcher rejects a pre-aborted signal without dispatching", async () => {
+      let dispatched = false;
+      const dispatcher = {
+        dispatch() {
+          dispatched = true;
+          return true;
+        },
+      };
+      const ac = new AbortController();
+      ac.abort();
+      await expect(undiciFetch("http://localhost:1/", { dispatcher, signal: ac.signal } as any)).rejects.toHaveProperty(
+        "name",
+        "AbortError",
+      );
+      expect(dispatched).toBe(false);
+    });
+
     it("a throwing onHeaders routes the error to onError", async () => {
       const pool = new Pool(hostUrl);
       const boom = new Error("bad status");
@@ -803,6 +836,11 @@ describe("undici", () => {
     it("constructors reject origins carrying a path, query, or hash", () => {
       expect(() => new Pool("http://localhost:3000/api")).toThrow(errors.InvalidArgumentError);
       expect(() => new Client("http://localhost:3000/?q=1")).toThrow(errors.InvalidArgumentError);
+    });
+
+    it("constructors reject non-http(s) origins", () => {
+      expect(() => new Pool("ws://localhost:3000")).toThrow(errors.InvalidArgumentError);
+      expect(() => new Client("file:///tmp")).toThrow(errors.InvalidArgumentError);
     });
 
     it("fetch with dispatcher copies body chunks from the dispatcher", async () => {
