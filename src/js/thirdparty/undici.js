@@ -1054,6 +1054,16 @@ function fetchViaDispatcher(dispatcher, input, init) {
         },
         onHeaders: (statusCode, rawHeaders, resume, statusText) => {
           if (statusCode < 200) return true;
+          if (
+            redirect === "error" &&
+            (statusCode === 301 || statusCode === 302 || statusCode === 303 || statusCode === 307 || statusCode === 308)
+          ) {
+            const err = new TypeError(`Redirect response '${statusCode}' received when redirect mode is 'error'`);
+            resolved = true;
+            reject(err);
+            abortDispatch?.(err);
+            return true;
+          }
           resumeData = resume;
           const responseHeaders = [];
           for (let i = 0; i + 1 < rawHeaders.length; i += 2) {
@@ -1081,6 +1091,7 @@ function fetchViaDispatcher(dispatcher, input, init) {
           return true;
         },
         onData: chunk => {
+          if (!streamController) return true;
           streamController.enqueue(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
           return streamController.desiredSize > 0;
         },

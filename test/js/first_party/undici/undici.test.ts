@@ -536,7 +536,7 @@ describe("undici", () => {
           },
         );
       });
-      expect(err).toBeInstanceOf(Error);
+      expect(err.code).toBe("ConnectionRefused");
       await pool.destroy();
     });
 
@@ -633,6 +633,19 @@ describe("undici", () => {
       await expect(pending).rejects.toHaveProperty("name", "AbortError");
     });
 
+    it("fetch with dispatcher and redirect 'error' rejects on redirects", async () => {
+      await using target = Bun.serve({
+        port: 0,
+        fetch: () => new Response(null, { status: 302, headers: { location: "/next" } }),
+      });
+      const pool = new Pool(`http://localhost:${target.port}`);
+      const dispatcher = { dispatch: (opts: any, handler: any) => pool.dispatch(opts, handler) };
+      await expect(undiciFetch("http://localhost:1/", { dispatcher, redirect: "error" } as any)).rejects.toBeInstanceOf(
+        TypeError,
+      );
+      await pool.destroy();
+    });
+
     it("fetch with dispatcher rejects on a non-constructible status instead of hanging", async () => {
       const dispatcher = {
         dispatch(_opts: any, handler: any) {
@@ -687,6 +700,10 @@ describe("undici", () => {
           // holding an undelivered chunk, then abort.
           const deadline = Date.now() + 5_000;
           while (pulls < 3 && Date.now() < deadline) await Bun.sleep(5);
+          if (pulls < 3) {
+            reject(new Error(`body never parked while paused; pulls=${pulls}`));
+            return;
+          }
           abortFn!();
         })();
       });
