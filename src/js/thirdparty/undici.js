@@ -623,6 +623,7 @@ class Dispatcher extends EventEmitter {
               },
               destroy(err, cb) {
                 // Early body.destroy() cancels the request so the dispatch loop is not left parked.
+                removeSignal();
                 if (!completed) abortBody?.(err ?? undefined);
                 cb(err);
               },
@@ -1161,6 +1162,7 @@ function fetchViaDispatcher(dispatcher, input, init) {
                   resumeData();
                 },
                 cancel(reason) {
+                  removeSignal();
                   streamController = null;
                   abortDispatch?.(reason instanceof Error ? reason : undefined);
                 },
