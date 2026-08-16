@@ -622,6 +622,8 @@ class Dispatcher extends EventEmitter {
               opts.onInfo({ statusCode, headers: headersFromRawHeaders(rawHeaders) });
             return true;
           }
+          // A second final onHeaders violates the dispatch contract; keep the first body.
+          if (body !== null) return true;
           resumeBody = resume;
           const headers = headersFromRawHeaders(rawHeaders);
           body = new DispatchBodyReadable(
@@ -752,15 +754,10 @@ class DispatcherBase extends Dispatcher {
       if (this.#closed) throw new ClientClosedError("The client is closed");
       return this[kDispatch](opts, handler);
     } catch (err) {
-      if (typeof handler.onError === "function") {
-        handler.onError(err);
-        return false;
-      }
-      if (typeof handler.onResponseError === "function") {
-        handler.onResponseError(null, err);
-        return false;
-      }
-      throw err;
+      // The guard above proves one of the two callbacks exists.
+      if (typeof handler.onError === "function") handler.onError(err);
+      else handler.onResponseError(null, err);
+      return false;
     }
   }
 
@@ -1156,6 +1153,8 @@ function fetchViaDispatcher(dispatcher, input, init) {
               abortDispatch?.(err);
               return true;
             }
+            // A second final onHeaders violates the dispatch contract; keep the first response.
+            if (resolved) return true;
             resumeData = resume;
             const responseHeaders = [];
             for (let i = 0; i + 1 < rawHeaders.length; i += 2) {

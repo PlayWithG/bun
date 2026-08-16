@@ -773,6 +773,39 @@ describe("undici", () => {
       );
     });
 
+    it("request() keeps the first body when onHeaders fires twice", async () => {
+      class DoubleHeaders extends Dispatcher {
+        dispatch(_opts: any, handler: any) {
+          handler.onConnect(() => {});
+          handler.onHeaders(200, [], () => {}, "OK");
+          // A second final onHeaders violates the contract; the first body must keep receiving data.
+          handler.onHeaders(500, [], () => {}, "ERR");
+          handler.onData(Buffer.from("hi"));
+          handler.onComplete([]);
+          return true;
+        }
+      }
+      const { statusCode, body } = await new DoubleHeaders().request({ path: "/", method: "GET" });
+      expect(statusCode).toBe(200);
+      expect(await body.text()).toBe("hi");
+    });
+
+    it("fetch keeps the first response when onHeaders fires twice", async () => {
+      const dispatcher = {
+        dispatch(_opts: any, handler: any) {
+          handler.onConnect(() => {});
+          handler.onHeaders(200, [], () => {}, "OK");
+          handler.onHeaders(500, [], () => {}, "ERR");
+          handler.onData(Buffer.from("hi"));
+          handler.onComplete([]);
+          return true;
+        },
+      };
+      const res = await undiciFetch("http://localhost:1/", { dispatcher } as any);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("hi");
+    });
+
     it("fetch with dispatcher rejects invalid URLs instead of throwing", async () => {
       const dispatcher = { dispatch: () => true };
       await expect(undiciFetch("not a url", { dispatcher } as any)).rejects.toBeInstanceOf(TypeError);
