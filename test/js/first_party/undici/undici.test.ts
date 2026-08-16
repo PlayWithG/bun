@@ -692,7 +692,7 @@ describe("undici", () => {
         },
       };
       await expect(undiciFetch("http://localhost:1/", { dispatcher } as any)).rejects.toThrow(
-        "dispatcher completed without a response",
+        "fetch failed for http://localhost:1: the dispatcher completed without calling onHeaders",
       );
     });
 

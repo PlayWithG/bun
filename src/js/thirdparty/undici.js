@@ -1178,7 +1178,11 @@ function fetchViaDispatcher(dispatcher, input, init) {
             removeSignal();
             if (!resolved) {
               resolved = true;
-              reject(new TypeError("fetch failed: dispatcher completed without a response"));
+              reject(
+                new TypeError(
+                  `fetch failed for ${url.origin}: the dispatcher completed without calling onHeaders; onHeaders must be called before onComplete`,
+                ),
+              );
               return;
             }
             streamController?.close();
