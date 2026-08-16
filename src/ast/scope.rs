@@ -217,11 +217,8 @@ impl Scope {
     }
 
     pub fn recursive_set_strict_mode(&mut self, kind: StrictModeKind) {
-        // Class bodies are unconditionally strict (ECMA-262), so the class
-        // kind must override `ImplicitStrictModeModuleType`: errors under that
-        // kind are deferred and discarded when the file is classified as
-        // CommonJS (Bun's forced-ESM interop), which must not swallow
-        // class-body strictness.
+        // Class bodies are unconditionally strict, so the class kind overrides
+        // `ImplicitStrictModeModuleType`, whose deferred errors may be discarded.
         if self.strict_mode == StrictModeKind::SloppyMode
             || (kind == StrictModeKind::ImplicitStrictModeClass
                 && self.strict_mode == StrictModeKind::ImplicitStrictModeModuleType)

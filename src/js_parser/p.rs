@@ -276,12 +276,9 @@ pub struct P<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> {
     /// pass reports them as errors when the enclosing scope is in strict mode.
     pub(crate) legacy_octal_literals: HashMap<bun_ast::Loc, bun_ast::Range>,
 
-    /// Strict-mode feature errors found in scopes whose strictness comes only
-    /// from `StrictModeKind::ImplicitStrictModeModuleType`. Whether such a
-    /// file really executes as an ES module is only known after the visit pass
-    /// (it may be classified as CommonJS via Bun's interop), so these are
-    /// queued here and either emitted or discarded once `exports_kind` is
-    /// decided in `parse_entry.rs`.
+    /// Strict-mode errors from scopes that are strict only via
+    /// `ImplicitStrictModeModuleType`; emitted or discarded by
+    /// `flush_deferred_forced_esm_strict_features` once `exports_kind` is known.
     pub(crate) deferred_forced_esm_strict_features:
         List<'a, (StrictModeFeature, bun_ast::Range, &'a [u8])>,
 
@@ -2846,13 +2843,9 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
             && !self.has_with_scope
             && !self.has_top_level_return
         {
-            // The file has no ESM syntax but is forced to be an ES module by its
-            // extension (".mjs"/".mts") or package.json "type": "module". It may
-            // still be classified as CommonJS after the visit pass when it uses
-            // "exports"/"module" (Bun's CommonJS interop), which is why errors
-            // for this kind are deferred (see `mark_strict_mode_feature`). A
-            // "with" statement or top-level return already proves the file will
-            // execute as CommonJS, so those stay in sloppy mode entirely.
+            // No ESM syntax, only the extension/package.json forces ESM; the
+            // file may still classify as CommonJS, so errors under this kind
+            // are deferred. `with`/top-level return already prove CommonJS.
             self.module_scope_mut()
                 .recursive_set_strict_mode(js_ast::StrictModeKind::ImplicitStrictModeModuleType);
         }
@@ -3051,12 +3044,9 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                     let original_member_ref = value.ref_;
 
                     if self.symbols[symbol_idx].kind == js_ast::symbol::Kind::HoistedFunction {
-                        // Block-level function declarations behave like "let" in strict mode.
-                        // `ImplicitStrictModeModuleType` keeps the sloppy-mode
-                        // behavior: hoisting runs before `exports_kind` is
-                        // classified, and a forced-ESM file may still execute
-                        // as CommonJS (sloppy) via Bun's interop, so this
-                        // structural decision cannot assume strictness.
+                        // Block-level function declarations behave like "let" in strict
+                        // mode. Hoisting runs before `exports_kind` classification, so
+                        // `ImplicitStrictModeModuleType` keeps the sloppy Annex B behavior.
                         if scope_strict_mode != js_ast::StrictModeKind::SloppyMode
                             && scope_strict_mode
                                 != js_ast::StrictModeKind::ImplicitStrictModeModuleType
@@ -4365,12 +4355,9 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
         if self.is_strict_mode() {
             let strict_mode = self.current_scope().strict_mode;
             if strict_mode == js_ast::StrictModeKind::ImplicitStrictModeModuleType {
-                // The file is only strict because ".mjs"/".mts" or package.json
-                // "type": "module" forces ESM, and it may still be classified as
-                // CommonJS after the visit pass (Bun's CommonJS interop), in
-                // which case it executes in sloppy mode and this is not an
-                // error. Queue it; `parse_entry.rs` emits or discards the queue
-                // once `exports_kind` is known.
+                // Strictness from this kind is provisional: the file may still
+                // classify as sloppy CommonJS. Queue the error; `parse_entry.rs`
+                // flushes or discards it once `exports_kind` is known.
                 self.deferred_forced_esm_strict_features
                     .push((feature, r, detail));
             } else {
@@ -4436,9 +4423,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                 where_ = self.enclosing_class_keyword;
             }
             js_ast::StrictModeKind::ImplicitStrictModeModuleType => {
-                // There is no keyword in the source to point at; the strictness
-                // comes from the file's extension or the enclosing package.json,
-                // so `where_` stays NONE and the note carries no location.
+                // No source keyword to point at; the note carries no location.
                 let ext = self.source.path.name().ext;
                 why = if ext == b".mjs" {
                     b"This file is implicitly in strict mode because the \".mjs\" extension makes it an ECMAScript module"
@@ -4454,8 +4439,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                         b"This file is in strict mode because of the \"use strict\" directive here";
                     where_ = self.source.range_of_string(self.module_scope_directive_loc);
                 } else {
-                    // The directive is inside an enclosing function whose
-                    // location is not tracked; note without a location.
+                    // Directive in an untracked nested scope; no location.
                     why = b"This code is in strict mode because of a \"use strict\" directive";
                 }
             }
@@ -4472,8 +4456,6 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
         }
         // bun_ast::Data is !Copy (Cow) — build the notes Box directly.
         let notes: Box<[bun_ast::Data]> = if where_ == bun_ast::Range::NONE {
-            // No source range to point at (forced-ESM module type, or a
-            // "use strict" directive in an untracked nested scope).
             Box::new([bun_ast::Data {
                 text: why.to_vec().into(),
                 ..Default::default()
@@ -4489,12 +4471,9 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
         );
     }
 
-    /// Emit or discard strict-mode feature errors queued from scopes whose
-    /// strictness comes only from `ImplicitStrictModeModuleType`. Called from
-    /// `parse_entry.rs` once `exports_kind` is final: a file that executes as
-    /// an ES module is really strict, while a file classified as CommonJS via
-    /// Bun's interop executes in sloppy mode, so its queued errors are not
-    /// errors at all.
+    /// Emit or discard the `ImplicitStrictModeModuleType` error queue once
+    /// `exports_kind` is final: only a file that executes as an ES module is
+    /// really strict; CommonJS-classified files run sloppy via the interop.
     pub(crate) fn flush_deferred_forced_esm_strict_features(&mut self, is_esm: bool) {
         if self.deferred_forced_esm_strict_features.is_empty() {
             return;
@@ -4504,23 +4483,15 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
             BumpVec::new_in(self.arena),
         );
         if !is_esm {
-            // The file executes as CommonJS (sloppy mode), so these are not
-            // strict-mode errors. But when bundling to an ESM output format
-            // the CommonJS wrapper still ends up inside a strict ES module,
-            // so re-apply the output-format check that
-            // `mark_strict_mode_feature` performs for sloppy scopes.
+            // Not strict-mode errors (the file runs sloppy), but bundling to
+            // an ESM output format puts the CommonJS wrapper inside a strict
+            // module, so re-apply the sloppy-scope output-format check.
             if self.is_strict_mode_output_format() {
                 for (feature, r, detail) in deferred {
-                    // Like `ForInVarInit`, legacy octal literals and reserved
-                    // words are normalized before the output: the printer
-                    // formats `E::Number` from its f64 value (`010` is already
-                    // `8` there), and the renamer remaps bound reserved-word
-                    // symbols (`package` becomes `_package`). Their callers
-                    // are also gated on `is_strict_mode()`, so sloppy scopes
-                    // never reached the output-format fallback for them in the
-                    // first place. (An unbound reserved-word reference does
-                    // survive verbatim, but it did before this queue existed
-                    // too; boundness is not known when the feature is queued.)
+                    // These never survive into the printed output: the printer
+                    // emits `E::Number` from its f64 (`010` is already `8`) and
+                    // the renamer remaps bound reserved words; unbound
+                    // reserved-word references behave as before this queue (#32193).
                     if matches!(
                         feature,
                         StrictModeFeature::ForInVarInit

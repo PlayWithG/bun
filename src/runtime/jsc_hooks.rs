@@ -3111,12 +3111,9 @@ fn transpile_source_code_inner(
                     };
                     let (bytecode_cache, bytecode_cache_size) =
                         node_compile_cache_blob.unwrap_or((core::ptr::null_mut(), 0));
-                    // A cache hit must replicate the transpile path's
-                    // main-module bookkeeping: `has_loaded` gates the
-                    // unknown-extension loader fallback (Tsx for a potential
-                    // main module vs. the file loader) and the concurrent
-                    // transpiler, so leaving it false here makes every later
-                    // unknown-extension import parse as code.
+                    // Replicate the transpile path's bookkeeping: `has_loaded`
+                    // gates the unknown-extension loader fallback, so leaving it
+                    // false makes later unknown-extension imports parse as code.
                     if is_main {
                         // SAFETY: per fn contract — `jsc_vm` is the live per-thread VM.
                         unsafe { (*jsc_vm).has_loaded = true };

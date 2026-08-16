@@ -1227,11 +1227,9 @@ pub struct FnOrArrowDataParse {
     pub(crate) allow_super_call: bool,
     pub(crate) allow_super_property: bool,
     pub(crate) is_top_level: bool,
-    /// True while parsing statements lexically outside every function and
-    /// arrow body, mirroring `FnOrArrowDataVisit::is_outside_fn_or_arrow`.
-    /// Unlike `is_top_level` (an await-permission flag gated on the
-    /// `top_level_await` feature), this is set unconditionally at the start
-    /// of the parse, so it does not vary with the output format.
+    /// True while parsing statements lexically outside every function/arrow
+    /// body (mirrors the visit struct). Unlike `is_top_level`, an
+    /// await-permission flag, this does not vary with `top_level_await`.
     pub(crate) is_outside_fn_or_arrow: bool,
     pub(crate) is_constructor: bool,
     pub(crate) is_typescript_declare: bool,
