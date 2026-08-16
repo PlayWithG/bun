@@ -56,15 +56,11 @@ export type Field =
       length?: number;
       passThis?: boolean;
       /**
-       * Name of a native method `fn <onGet>(&self, &JSGlobalObject)` to run every time the
-       * property is read on an instance, before the method is handed back. The property is then
-       * installed as an accessor instead of a data property (it still reads, calls, assigns and
-       * `expect.extend`s like a method), and the method itself is kept on the prototype under the
-       * property's private name, so the property name must also be listed in `BunBuiltinNames.h`.
+       * Native `fn <onGet>(&self, &JSGlobalObject)` called each time an instance's property is read,
+       * before the method is returned. It must not throw or run JavaScript.
        *
-       * Reading the property is the last point at which the frame doing the call is guaranteed
-       * to exist: a call in tail position has already replaced it by the time the method runs.
-       * The hook must not throw or run JavaScript.
+       * The property becomes an accessor and the method is stored under the property's private
+       * name, so the name must also be listed in `BunBuiltinNames.h`.
        */
       onGet?: string;
       invalidThisBehavior?: InvalidThisBehavior;

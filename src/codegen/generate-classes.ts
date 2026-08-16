@@ -373,8 +373,7 @@ JSC_DECLARE_CUSTOM_GETTER(js${typeName}Constructor);
         ...(configurable ? [] : ["PropertyAttribute::DontDelete"]),
       ].join(" | ");
 
-      // The method lives under the private name; the public name is an accessor that runs the
-      // `onGet` hook and hands the method back (see `onGet` in class-definitions.ts).
+      // Method under the private name, `onGet` accessor under the public one (class-definitions.ts).
       specialSymbols += `
     this->putDirect(vm, WebCore::clientData(vm)->builtinNames().${name}PrivateName(), JSFunction::create(vm, globalObject, ${
       field.length || 0
@@ -2117,8 +2116,7 @@ function generateRust(
       }
 
       if (names.onGet) {
-        // Infallible notification (see `onGet` in class-definitions.ts): no exception scope, so
-        // it is called directly like `memoryCost`/`hasPendingActivity`.
+        // `onGet` cannot throw (class-definitions.ts), so it is called directly like `memoryCost`.
         thunk(
           names.onGet,
           `(this: &${T}, global: &JSGlobalObject) -> ()`,

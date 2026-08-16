@@ -923,8 +923,7 @@ Date)
       );
     });
     it("helper function called with different values", async () => {
-      // Both calls resolve to the helper's line, so this is the same conflict as
-      // "should error trying to update the same line twice" above.
+      // Both calls resolve to the helper's line: the tail-call twin of "should error trying to update the same line twice".
       await tester.testError(
         {
           msg: "error: Failed to update inline snapshot: Multiple inline snapshots on the same line must all have the same value",
@@ -1101,8 +1100,7 @@ test("error snapshots", () => {
   expect(() => {
     throw undefined; // this one doesn't work in jest because it doesn't think the function threw
   }).toThrowErrorMatchingInlineSnapshot(`undefined`);
-  // The matcher error is coloured only when colours are enabled (CI sets FORCE_COLOR=1, a local
-  // `bun bd test` does not).
+  // The matcher error is coloured only when colours are on (CI sets FORCE_COLOR=1; a piped local run has none).
   if (Bun.enableANSIColors) {
     expect(() => {
       expect(() => {}).toThrowErrorMatchingInlineSnapshot(`undefined`);

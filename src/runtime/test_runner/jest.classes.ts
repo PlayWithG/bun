@@ -482,9 +482,7 @@ export default [
       toMatchInlineSnapshot: {
         fn: "toMatchInlineSnapshot",
         length: 1,
-        // The matcher has to know where in the test file it was written. Record that when the
-        // property is read: `() => expect(x).toMatchInlineSnapshot()` calls it in tail position,
-        // and the frame holding the location is gone by the time the matcher runs.
+        // Records the matcher's location while the caller's frame still exists (InlineSnapshotSite in expect.rs).
         onGet: "onGetToMatchInlineSnapshot",
       },
       toStrictEqual: {

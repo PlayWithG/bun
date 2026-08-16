@@ -6695,8 +6695,7 @@ CPP_DECL bool Bun__CallFrame__isFromBunMain(JSC::CallFrame* callFrame, JSC::VM* 
     return source.string() == "builtin://bun/main"_s;
 }
 
-// Runs the sourcemap remap over a (1-based) position and writes it out. An empty `sourceURL` or a
-// zero line means "unknown" and is written out as-is.
+// Sourcemap-remaps a 1-based position; an empty `sourceURL` or a zero line is written out as-is.
 static void writeRemappedSrcLoc(JSC::JSGlobalObject* globalObject, String sourceURL, JSC::LineColumn lineColumn, BunString* outSourceURL, unsigned int* outLine, unsigned int* outColumn)
 {
     if (!sourceURL.isEmpty() and lineColumn.line > 0) {
@@ -6707,8 +6706,7 @@ static void writeRemappedSrcLoc(JSC::JSGlobalObject* globalObject, String source
 
         Bun__remapStackFramePositions(Bun::vm(globalObject), &remappedFrame, 1);
 
-        // The remapper either keeps the ref passed in or swaps it for one it owns; either way
-        // exactly one ref comes back and the String takes it over.
+        // Exactly one ref comes back (the one passed in, or one the remapper made); take it over.
         sourceURL = remappedFrame.source_url.transferToWTFString();
         lineColumn.line = OrdinalNumber::fromZeroBasedInt(remappedFrame.position.line_zero_based).oneBasedInt();
         lineColumn.column = OrdinalNumber::fromZeroBasedInt(remappedFrame.position.column_zero_based).oneBasedInt();
@@ -6719,9 +6717,8 @@ static void writeRemappedSrcLoc(JSC::JSGlobalObject* globalObject, String source
     *outColumn = lineColumn.column;
 }
 
-// Visits the nearest frame that has source positions and is not a builtin: from a host function
-// this is the JS code that called it, from a custom getter (no frame of its own) the JS code
-// doing the property read.
+// Nearest non-builtin frame with source positions: a host function's JS caller, or, from a custom
+// getter (which has no frame of its own), the JS code performing the property read.
 template<typename Func>
 static void visitNearestUserFrame(JSC::CallFrame* startFrame, JSC::VM& vm, Func&& func)
 {
@@ -6746,15 +6743,11 @@ CPP_DECL void Bun__CallFrame__getCallerSrcLoc(JSC::CallFrame* callFrame, JSC::JS
     writeRemappedSrcLoc(globalObject, std::move(sourceURL), lineColumn, outSourceURL, outLine, outColumn);
 }
 
-// For use from a custom getter: the source location of the `name` token in the `.name` property
-// read the top JS frame is currently performing. This is the same position the frame would report
-// for the call `.name(...)` that usually follows, but it is still obtainable when that call ends up
-// in tail position and the frame is gone by the time the callee runs.
-//
-// The expression info JSC records for a property read spans from the `.` (its divot) to the end of
-// the property name, so the name starts `nameLength` characters before `divot + endOffset`. That is
-// checked against the source text; anything else (a computed `[name]` read, a read relayed through
-// another function, or a span too long for JSC to record) reports an empty location instead.
+// From a custom getter: the position of the `name` token in the `.name` read the top JS frame is
+// performing, which is also what a stack walk reports for a `.name(...)` call. JSC's expression
+// info for a dot read runs from the `.` (the divot) to the end of the name, so the name is the last
+// `nameLength` characters of that range; when the source text there is not `name` (a computed
+// `[name]` read, a read relayed through another function) the location is reported as empty.
 CPP_DECL void Bun__getPropertyReadSrcLoc(JSC::JSGlobalObject* globalObject, const char* name, size_t nameLength, BunString* outSourceURL, unsigned int* outLine, unsigned int* outColumn)
 {
     auto& vm = JSC::getVM(globalObject);
@@ -6773,15 +6766,14 @@ CPP_DECL void Bun__getPropertyReadSrcLoc(JSC::JSGlobalObject* globalObject, cons
             return;
         size_t nameEnd = static_cast<size_t>(info.divot) + info.endOffset;
         size_t nameStart = nameEnd - nameLength;
-        if (nameStart < info.divot || nameEnd > source.length())
+        if (nameEnd > source.length())
             return;
         for (size_t i = 0; i < nameLength; i++) {
             if (source[nameStart + i] != static_cast<unsigned char>(name[i]))
                 return;
         }
 
-        // `computeLineAndColumn` is the divot's position; advance it over the `.` and whatever
-        // whitespace or comments sit between it and the name.
+        // The divot's position, advanced over the `.` and any whitespace or comments up to the name.
         JSC::LineColumn position = visitor->computeLineAndColumn();
         for (size_t i = info.divot; i < nameStart; i++) {
             char16_t c = source[i];

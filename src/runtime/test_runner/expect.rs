@@ -45,10 +45,8 @@ pub struct Expect {
 }
 
 /// Where `.toMatchInlineSnapshot` / `.toThrowErrorMatchingInlineSnapshot` was last read off this
-/// `expect()` value, recorded by the property's `onGet` hook (jest.classes.ts) and consumed by the
-/// matcher call that follows. The read still has the caller's frame; the call may be a proper tail
-/// call (`() => expect(x).toMatchInlineSnapshot()`), in which case the frame is gone by the time
-/// the matcher runs. Empty `file` means nothing was recorded.
+/// value (`onGet` in jest.classes.ts). The read still has the caller's frame; the call after it may
+/// be a proper tail call (`() => expect(x).toMatchInlineSnapshot()`), leaving the matcher no frame.
 pub(crate) struct InlineSnapshotSite {
     file: bun_core::OwnedStringCell,
     line: Cell<core::ffi::c_uint>,
@@ -86,8 +84,7 @@ impl InlineSnapshotSite {
         self.column.set(column);
     }
 
-    /// Returns the recorded location and clears it, so a later matcher call on the same `expect()`
-    /// value cannot reuse a location that belonged to this one.
+    /// Clears the site, so a later matcher call on the same value cannot reuse it.
     fn take(&self) -> Option<SnapshotSrcLoc> {
         let file = self.file.replace(bun_core::String::empty());
         let line = self.line.replace(0);
@@ -114,8 +111,7 @@ impl From<bun_jsc::call_frame::CallerSrcLoc> for SnapshotSrcLoc {
 }
 
 unsafe extern "C" {
-    /// `Bun__getPropertyReadSrcLoc` in bindings.cpp. `out_file` comes back empty when the property
-    /// read in progress cannot be tied to a `.name` token in the source.
+    /// bindings.cpp; leaves `out_file` empty unless the top JS frame is performing a `.name` read.
     fn Bun__getPropertyReadSrcLoc(
         global: &JSGlobalObject,
         name: *const u8,
@@ -1214,9 +1210,7 @@ impl Expect {
             };
             let buntest = buntest_strong.get();
 
-            // 1. find the src loc of the snapshot: where the matcher property was read (see
-            //    `InlineSnapshotSite`), else the frame that called the matcher. The latter is the
-            //    wrong place (or missing) when the call was a tail call.
+            // 1. find the src loc: the recorded property read, else the frame that called the matcher
             let srcloc = recorded_site
                 .unwrap_or_else(|| SnapshotSrcLoc::from(call_frame.get_caller_src_loc(global_this)));
             let file_id = buntest.file_id;
