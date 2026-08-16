@@ -13,6 +13,8 @@ import {
   fetch as undiciFetch,
 } from "undici";
 
+import { bunEnv, bunExe } from "harness";
+
 import { createServer } from "../../../http-test-server";
 
 describe("undici", () => {
@@ -682,26 +684,48 @@ describe("undici", () => {
       expect(data.opaque).toEqual({ reqId: 42 });
     });
 
+    it("fetch rejects when the dispatcher completes without a response", async () => {
+      const dispatcher = {
+        dispatch(_opts: any, handler: any) {
+          handler.onConnect(() => {});
+          handler.onComplete([]);
+          return true;
+        },
+      };
+      await expect(undiciFetch("http://localhost:1/", { dispatcher } as any)).rejects.toThrow(
+        "dispatcher completed without a response",
+      );
+    });
+
     it("fetch with dispatcher rejects invalid URLs instead of throwing", async () => {
       const dispatcher = { dispatch: () => true };
       await expect(undiciFetch("not a url", { dispatcher } as any)).rejects.toBeInstanceOf(TypeError);
     });
 
     it("fetch routes through the global dispatcher when none is passed", async () => {
+      // Spawned so installing a global dispatcher cannot leak into other tests.
       await using target = Bun.serve({
         port: 0,
         fetch: () => new Response("via-global"),
       });
-      const pool = new Pool(`http://localhost:${target.port}`);
-      const prev = getGlobalDispatcher();
-      setGlobalDispatcher({ dispatch: (opts: any, handler: any) => pool.dispatch(opts, handler) } as any);
-      try {
-        const res = await undiciFetch("http://localhost:1/x");
-        expect(await res.text()).toBe("via-global");
-      } finally {
-        setGlobalDispatcher(prev);
-        await pool.close();
-      }
+      await using proc = Bun.spawn({
+        cmd: [
+          bunExe(),
+          "-e",
+          `const { Pool, setGlobalDispatcher, fetch } = require("undici");
+           const pool = new Pool("http://localhost:${target.port}");
+           setGlobalDispatcher({ dispatch: (opts, handler) => pool.dispatch(opts, handler) });
+           const res = await fetch("http://localhost:1/x");
+           console.log(await res.text());
+           await pool.close();`,
+        ],
+        env: bunEnv,
+        stderr: "pipe",
+      });
+      const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+      expect(stderr).toBe("");
+      expect(stdout).toBe("via-global\n");
+      expect(exitCode).toBe(0);
     });
 
     it("request() body formData() parses using the response content-type", async () => {
@@ -798,6 +822,24 @@ describe("undici", () => {
       await body.text();
       expect(adds).toBe(2);
       expect(removes).toBe(2);
+    });
+
+    it("request() copies body chunks from the dispatcher", async () => {
+      const buf = Buffer.alloc(4);
+      class ReusesBuffer extends Dispatcher {
+        dispatch(_opts: any, handler: any) {
+          handler.onConnect(() => {});
+          handler.onHeaders(200, [], () => {}, "OK");
+          buf.write("AAAA");
+          handler.onData(buf);
+          buf.write("BBBB");
+          handler.onData(buf);
+          handler.onComplete([]);
+          return true;
+        }
+      }
+      const { body } = await new ReusesBuffer().request({ path: "/", method: "GET" });
+      expect(await body.text()).toBe("AAAABBBB");
     });
 
     it("RetryAgent.close() closes the wrapped dispatcher", async () => {

@@ -638,7 +638,8 @@ class Dispatcher extends EventEmitter {
           });
           return true;
         },
-        onData: chunk => body.push(chunk),
+        // Copy: the dispatch contract only guarantees the chunk during the callback.
+        onData: chunk => body.push(Buffer.from(chunk)),
         onComplete: rawTrailers => {
           completed = true;
           removeSignal();
@@ -1175,6 +1176,11 @@ function fetchViaDispatcher(dispatcher, input, init) {
           },
           onComplete: () => {
             removeSignal();
+            if (!resolved) {
+              resolved = true;
+              reject(new TypeError("fetch failed: dispatcher completed without a response"));
+              return;
+            }
             streamController?.close();
           },
           onError: routeError,
