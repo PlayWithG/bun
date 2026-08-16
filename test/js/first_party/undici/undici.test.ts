@@ -727,6 +727,50 @@ describe("undici", () => {
       expect(await res.text()).toBe("AAAABBBB");
     });
 
+    it("request() body blob() carries the response content-type", async () => {
+      const pool = new Pool(hostUrl);
+      const { body } = await pool.request({ path: "/get", method: "GET" });
+      const blob = await body.blob();
+      expect(blob.type).toContain("application/json");
+      await pool.close();
+    });
+
+    it("a lowercase head method keeps content-length in the handler headers", async () => {
+      const pool = new Pool(hostUrl);
+      const res = await dispatchLegacy(pool, { path: "/head", method: "head" });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["content-length"]).toBeDefined();
+      await pool.close();
+    });
+
+    it("repeated onConnect keeps signal listeners balanced", async () => {
+      let adds = 0;
+      let removes = 0;
+      const signal = {
+        aborted: false,
+        on: () => {
+          adds++;
+        },
+        removeListener: () => {
+          removes++;
+        },
+      };
+      class TwoHops extends Dispatcher {
+        dispatch(_opts: any, handler: any) {
+          handler.onConnect(() => {});
+          handler.onConnect(() => {});
+          handler.onHeaders(200, [], () => {}, "OK");
+          handler.onData(Buffer.from("hi"));
+          handler.onComplete([]);
+          return true;
+        }
+      }
+      const { body } = await new TwoHops().request({ path: "/", method: "GET", signal: signal as any });
+      await body.text();
+      expect(adds).toBe(2);
+      expect(removes).toBe(2);
+    });
+
     it("RetryAgent.close() closes the wrapped dispatcher", async () => {
       const agent = new Agent();
       const retry = new RetryAgent(agent);

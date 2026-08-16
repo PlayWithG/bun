@@ -412,7 +412,7 @@ function fetchDispatch(origin, opts, handler, pending) {
 
     // fetch() already decompressed the body, so drop the encoding headers.
     const responseHeaders = { __proto__: null, ...resp.headers.toJSON() };
-    if (method !== "HEAD") {
+    if (method.toUpperCase() !== "HEAD") {
       delete responseHeaders["content-encoding"];
       delete responseHeaders["content-length"];
     }
@@ -514,7 +514,8 @@ class DispatchBodyReadable extends Readable {
   }
 
   async blob() {
-    return new Blob([await this.#consume()]);
+    const buf = await this.#consume();
+    return this.#contentType ? new Blob([buf], { type: String(this.#contentType) }) : new Blob([buf]);
   }
 
   async formData() {
@@ -593,6 +594,8 @@ class Dispatcher extends EventEmitter {
         onConnect: (abort, ctx) => {
           abortBody = abort;
           context = ctx ?? null;
+          // onConnect may fire once per redirect/retry hop; drop the previous hop's listener first.
+          removeSignal();
           // Wired here because DispatchOptions has no signal field; user dispatch() implementations never see it.
           if (signal) {
             onSignalAbort = () => abort(signal.reason);
@@ -693,7 +696,7 @@ class DispatcherBase extends Dispatcher {
     // Drain, then transition to destroyed, like undici's close().then(() => destroy()).
     Promise.allSettled(Array.from(this[kPending], entry => entry.done)).then(() => {
       this.#destroyed = true;
-      callback(null, null);
+      queueMicrotask(() => callback(null, null));
     });
   }
 
@@ -712,7 +715,9 @@ class DispatcherBase extends Dispatcher {
     this.#closed = true;
     const reason = err ?? new ClientDestroyedError("The client is destroyed");
     for (const entry of this[kPending]) entry.abort(reason);
-    Promise.allSettled(Array.from(this[kPending], entry => entry.done)).then(() => callback(null, null));
+    Promise.allSettled(Array.from(this[kPending], entry => entry.done)).then(() =>
+      queueMicrotask(() => callback(null, null)),
+    );
   }
 
   dispatch(opts, handler) {
@@ -1101,6 +1106,8 @@ function fetchViaDispatcher(dispatcher, input, init) {
         {
           onConnect: abort => {
             abortDispatch = abort;
+            // onConnect may fire once per redirect/retry hop; drop the previous hop's listener first.
+            removeSignal();
             // Wired here because DispatchOptions has no signal field; user dispatch() implementations never see it.
             if (signal) {
               onSignalAbort = () => abort(signal.reason);
