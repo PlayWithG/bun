@@ -1,6 +1,16 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { Readable } from "node:stream";
-import { Agent, Client, Dispatcher, Pool, RetryAgent, errors, getGlobalDispatcher, request, fetch as undiciFetch } from "undici";
+import {
+  Agent,
+  Client,
+  Dispatcher,
+  Pool,
+  RetryAgent,
+  errors,
+  getGlobalDispatcher,
+  request,
+  fetch as undiciFetch,
+} from "undici";
 
 import { createServer } from "../../../http-test-server";
 
