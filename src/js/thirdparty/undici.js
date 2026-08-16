@@ -5,7 +5,9 @@ const { Buffer } = require("node:buffer");
 const { _ReadableFromWeb: ReadableFromWeb } = require("internal/webstreams_adapters");
 
 const ObjectCreate = Object.create;
-const kEmptyObject = ObjectCreate(null);
+const kEmptyObject = Object.freeze(ObjectCreate(null));
+// Captured at module load so tampering with globalThis later cannot break dispatch.
+const { AbortController, ArrayBuffer, Blob, ReadableStream } = globalThis;
 
 var fetch = Bun.fetch;
 const bindings = $cpp("Undici.cpp", "createUndiciInternalBinding");
@@ -277,9 +279,9 @@ function appendHeader(headers, name, value) {
 }
 
 function headersFromDispatchOpts(headers) {
-  if (headers == null) return kEmptyObject;
+  if (headers == null) return undefined;
   if ($isJSArray(headers)) {
-    const out = {};
+    const out = ObjectCreate(null);
     if (headers.length > 0 && $isJSArray(headers[0])) {
       for (const [name, value] of headers) appendHeader(out, name, value);
     } else {
@@ -351,6 +353,16 @@ function fetchDispatch(origin, opts, handler) {
     },
   };
 
+  const signal = opts.signal;
+  let onSignalAbort = null;
+  if (signal) {
+    onSignalAbort = () => abort(signal.reason);
+    if (signal.aborted) onSignalAbort();
+    else if (typeof signal.addEventListener === "function")
+      signal.addEventListener("abort", onSignalAbort, { once: true });
+    else if (typeof signal.on === "function") signal.on("abort", onSignalAbort);
+  }
+
   (async () => {
     const url = new URL(opts.path || "/", origin);
     const { query } = opts;
@@ -358,7 +370,7 @@ function fetchDispatch(origin, opts, handler) {
     const method = opts.method ? String(opts.method).toUpperCase() : "GET";
     const body = await bodyFromDispatchOpts(opts.body);
 
-    if (isControllerStyle) handler.onRequestStart?.(controller, kEmptyObject);
+    if (isControllerStyle) handler.onRequestStart?.(controller, { __proto__: null });
     else handler.onConnect?.(abort);
     if (aborted) throw abortReason;
 
@@ -412,21 +424,67 @@ function fetchDispatch(origin, opts, handler) {
       }
     }
 
-    if (isControllerStyle) handler.onResponseEnd?.(controller, kEmptyObject);
+    if (isControllerStyle) handler.onResponseEnd?.(controller, { __proto__: null });
     else handler.onComplete?.([]);
-  })().catch(err => {
-    if (isControllerStyle && typeof handler.onResponseError === "function") {
-      handler.onResponseError(controller, err);
-      return;
-    }
-    if (typeof handler.onError === "function") {
-      handler.onError(err);
-      return;
-    }
-    throw err;
-  });
+  })()
+    .catch(err => {
+      // Cancel the response body when a handler callback threw before the body loop.
+      if (!aborted) ac.abort(err);
+      if (isControllerStyle && typeof handler.onResponseError === "function") {
+        handler.onResponseError(controller, err);
+        return;
+      }
+      if (typeof handler.onError === "function") {
+        handler.onError(err);
+        return;
+      }
+      throw err;
+    })
+    .finally(() => {
+      if (!onSignalAbort) return;
+      if (typeof signal.removeEventListener === "function") signal.removeEventListener("abort", onSignalAbort);
+      else if (typeof signal.removeListener === "function") signal.removeListener("abort", onSignalAbort);
+    });
 
   return true;
+}
+
+// dispatcher.request() body: a Readable with undici's body-mixin methods.
+class DispatchBodyReadable extends Readable {
+  #used = false;
+
+  get bodyUsed() {
+    return this.#used;
+  }
+
+  async #consume() {
+    if (this.#used) throw new TypeError("unusable");
+    this.#used = true;
+    const chunks = [];
+    for await (const chunk of this) chunks.push(chunk);
+    return Buffer.concat(chunks);
+  }
+
+  async text() {
+    return (await this.#consume()).toString();
+  }
+
+  async json() {
+    return JSON.parse((await this.#consume()).toString());
+  }
+
+  async arrayBuffer() {
+    const buf = await this.#consume();
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+  }
+
+  async bytes() {
+    return new Uint8Array(await this.#consume());
+  }
+
+  async blob() {
+    return new Blob([await this.#consume()]);
+  }
 }
 
 class Dispatcher extends EventEmitter {
@@ -461,12 +519,12 @@ class Dispatcher extends EventEmitter {
         onConnect: () => {},
         onHeaders: (statusCode, rawHeaders, resume, _statusText) => {
           resumeBody = resume;
-          body = new Readable({
+          body = new DispatchBodyReadable({
             read() {
               resumeBody();
             },
           });
-          const headers = {};
+          const headers = ObjectCreate(null);
           for (let i = 0; i + 1 < rawHeaders.length; i += 2) {
             appendHeader(headers, String(rawHeaders[i]).toLowerCase(), String(rawHeaders[i + 1]));
           }
@@ -474,9 +532,9 @@ class Dispatcher extends EventEmitter {
             statusCode,
             headers,
             body,
-            trailers: kEmptyObject,
+            trailers: { __proto__: null },
             opaque: opts.opaque ?? null,
-            context: kEmptyObject,
+            context: { __proto__: null },
           });
           return true;
         },

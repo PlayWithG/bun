@@ -235,6 +235,55 @@ describe("undici", () => {
       await pool.destroy();
     });
 
+    it("Pool.request body exposes the undici body mixin", async () => {
+      const pool = new Pool(hostUrl);
+      const { statusCode, body } = await pool.request({ path: "/get", method: "GET" });
+      expect(statusCode).toBe(200);
+      expect(body.bodyUsed).toBe(false);
+      expect(await body.json()).toEqual({ url: `${hostUrl}/get`, method: "GET" });
+      expect(body.bodyUsed).toBe(true);
+      await expect(body.json()).rejects.toThrow("unusable");
+      await pool.close();
+    });
+
+    it("Pool.request honors opts.signal", async () => {
+      await using server = Bun.serve({
+        port: 0,
+        fetch() {
+          // Never respond; the request can only finish by being aborted.
+          return new Promise<Response>(() => {});
+        },
+      });
+      const pool = new Pool(`http://localhost:${server.port}`);
+      const ac = new AbortController();
+      const pending = pool.request({ path: "/", method: "GET", signal: ac.signal });
+      ac.abort();
+      // The signal's reason (a DOMException named AbortError) propagates, like undici.
+      await expect(pending).rejects.toHaveProperty("name", "AbortError");
+      await pool.destroy();
+    });
+
+    it("a throwing onHeaders routes the error to onError", async () => {
+      const pool = new Pool(hostUrl);
+      const boom = new Error("bad status");
+      const err = await new Promise<any>((resolve, reject) => {
+        pool.dispatch(
+          { path: "/get", method: "GET" },
+          {
+            onConnect: () => {},
+            onHeaders: () => {
+              throw boom;
+            },
+            onData: () => reject(new Error("should not receive data")),
+            onComplete: () => reject(new Error("should not complete")),
+            onError: resolve,
+          },
+        );
+      });
+      expect(err).toBe(boom);
+      await pool.close();
+    });
+
     it("Pool.request resolves with a readable body", async () => {
       const pool = new Pool(hostUrl);
       const { statusCode, headers, body } = await pool.request({ path: "/get", method: "GET" });
