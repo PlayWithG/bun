@@ -2,6 +2,7 @@ const EventEmitter = require("node:events");
 const StreamModule = require("node:stream");
 const { Readable } = StreamModule;
 const { _ReadableFromWeb: ReadableFromWeb } = require("internal/webstreams_adapters");
+const { validateNumber } = require("internal/validators");
 
 const ObjectCreate = Object.create;
 const kEmptyObject = ObjectCreate(null);
@@ -372,15 +373,353 @@ const util = {
   },
 };
 
-class EventSource extends EventTarget {
-  static CONNECTING = 0;
-  static OPEN = 1;
-  static CLOSED = 2;
+const kConnecting = 0;
+const kOpen = 1;
+const kClosed = 2;
+// Same default as undici and Chromium.
+const kDefaultReconnectionTime = 3000;
+// setTimeout() treats anything wider than an i32 as 1ms, which would turn a huge `retry:` into a busy loop.
+const kMaxReconnectionTime = 2 ** 31 - 1;
 
-  constructor() {
+function isASCIIDigits(value) {
+  if (value.length === 0) return false;
+  for (let i = 0; i < value.length; i++) {
+    const c = value.charCodeAt(i);
+    if (c < 0x30 || c > 0x39) return false;
+  }
+  return true;
+}
+
+function isEventStreamContentType(contentType) {
+  if (contentType === null) return false;
+  const semicolon = contentType.indexOf(";");
+  const essence = semicolon === -1 ? contentType : contentType.slice(0, semicolon);
+  return essence.trim().toLowerCase() === "text/event-stream";
+}
+
+/**
+ * Server-Sent Events client, built on fetch() the same way undici's is.
+ * https://html.spec.whatwg.org/multipage/server-sent-events.html
+ */
+class EventSource extends EventTarget {
+  #url;
+  #withCredentials = false;
+  #readyState = kConnecting;
+  #lastEventId = "";
+  #reconnectionTime = kDefaultReconnectionTime;
+
+  // Non-null while a fetch is in flight or its body is being read. Every async continuation compares against it so
+  // that a connection which has been closed or superseded cannot touch the EventSource anymore.
+  #controller = null;
+  #reconnectTimer = null;
+
+  // Per-connection state, reset in #readBody().
+  #origin = "";
+  #decoder = null;
+  #partialLine = "";
+  #skipLF = false;
+  #dataBuffer = "";
+  #eventTypeBuffer = "";
+  #lastEventIdBuffer = "";
+
+  // on{open,message,error} handler values, plus the listener registered on behalf of each non-null one.
+  #handlers = { __proto__: null, open: null, message: null, error: null };
+  #handlerListeners = { __proto__: null, open: null, message: null, error: null };
+
+  constructor(url, init) {
     super();
+    if (arguments.length === 0) {
+      throw new TypeError("EventSource constructor: 1 argument required, but only 0 present.");
+    }
+
+    let parsed;
+    try {
+      parsed = new URL(url);
+    } catch {
+      throw new DOMException(`Cannot open an EventSource to '${url}'. The URL is invalid.`, "SyntaxError");
+    }
+    this.#url = parsed.href;
+
+    if ($isObject(init)) {
+      this.#withCredentials = !!init.withCredentials;
+      // undici extension: `{ node: { reconnectionTime } }` overrides the delay used until the server sends `retry:`.
+      const reconnectionTime = init.node?.reconnectionTime;
+      if (reconnectionTime !== undefined) {
+        validateNumber(reconnectionTime, "init.node.reconnectionTime", 0, kMaxReconnectionTime);
+        this.#reconnectionTime = reconnectionTime;
+      }
+    }
+
+    this.#connect();
+  }
+
+  get url() {
+    return this.#url;
+  }
+
+  get withCredentials() {
+    return this.#withCredentials;
+  }
+
+  get readyState() {
+    return this.#readyState;
+  }
+
+  close() {
+    if (this.#readyState === kClosed) return;
+    this.#readyState = kClosed;
+    if (this.#reconnectTimer !== null) {
+      clearTimeout(this.#reconnectTimer);
+      this.#reconnectTimer = null;
+    }
+    this.#abort();
+  }
+
+  get onopen() {
+    return this.#handlers.open;
+  }
+  set onopen(value) {
+    this.#setHandler("open", value);
+  }
+
+  get onmessage() {
+    return this.#handlers.message;
+  }
+  set onmessage(value) {
+    this.#setHandler("message", value);
+  }
+
+  get onerror() {
+    return this.#handlers.error;
+  }
+  set onerror(value) {
+    this.#setHandler("error", value);
+  }
+
+  #setHandler(type, value) {
+    // EventHandler IDL attributes keep any object (even a non-callable one) and turn everything else into null.
+    if (!$isObject(value)) value = null;
+    this.#handlers[type] = value;
+
+    if (value !== null) {
+      if (this.#handlerListeners[type] !== null) return;
+      const listener = event => {
+        const handler = this.#handlers[type];
+        if ($isCallable(handler)) handler.$call(this, event);
+      };
+      this.#handlerListeners[type] = listener;
+      super.addEventListener(type, listener);
+    } else if (this.#handlerListeners[type] !== null) {
+      super.removeEventListener(type, this.#handlerListeners[type]);
+      this.#handlerListeners[type] = null;
+    }
+  }
+
+  #abort() {
+    const controller = this.#controller;
+    if (controller === null) return;
+    this.#controller = null;
+    controller.abort();
+  }
+
+  #connect() {
+    const controller = new AbortController();
+    this.#controller = controller;
+
+    const headers = new Headers({ "accept": "text/event-stream", "cache-control": "no-cache" });
+    if (this.#lastEventId !== "") {
+      try {
+        headers.set("last-event-id", this.#lastEventId);
+      } catch {
+        // fetch() cannot carry header values outside Latin-1. Resuming without the id beats never reconnecting.
+      }
+    }
+
+    fetch(this.#url, { headers, signal: controller.signal }).then(
+      response => {
+        if (this.#controller !== controller) return;
+        this.#onResponse(controller, response);
+      },
+      () => {
+        if (this.#controller !== controller) return;
+        this.#reestablish();
+      },
+    );
+  }
+
+  #onResponse(controller, response) {
+    if (response.status !== 200 || !isEventStreamContentType(response.headers.get("content-type"))) {
+      this.#fail();
+      return;
+    }
+
+    this.#readyState = kOpen;
+    this.dispatchEvent(new Event("open"));
+    // The open handler may have called close().
+    if (this.#controller !== controller) return;
+
+    this.#readBody(controller, response);
+  }
+
+  async #readBody(controller, response) {
+    // Events carry the origin of the URL that actually served the stream, which may differ from #url after redirects.
+    this.#origin = new URL(response.url || this.#url).origin;
+    this.#decoder = new TextDecoder();
+    this.#partialLine = "";
+    this.#skipLF = false;
+    this.#dataBuffer = "";
+    this.#eventTypeBuffer = "";
+    this.#lastEventIdBuffer = this.#lastEventId;
+
+    const reader = response.body.getReader();
+    while (true) {
+      let result;
+      try {
+        result = await reader.read();
+      } catch {
+        // A connection that drops mid-stream is treated like one the server closed.
+        result = { done: true };
+      }
+      if (this.#controller !== controller) return;
+      if (result.done) break;
+      this.#feed(result.value);
+      if (this.#controller !== controller) return;
+    }
+
+    this.#reestablish();
+  }
+
+  #feed(chunk) {
+    const text = this.#decoder.decode(chunk, { stream: true });
+    const length = text.length;
+    if (length === 0) return;
+    let start = 0;
+
+    if (this.#skipLF) {
+      this.#skipLF = false;
+      if (text.charCodeAt(0) === 0x0a) start = 1;
+    }
+
+    while (start < length) {
+      let end = start;
+      while (end < length) {
+        const c = text.charCodeAt(end);
+        if (c === 0x0a || c === 0x0d) break;
+        end++;
+      }
+      if (end === length) {
+        this.#partialLine += text.slice(start);
+        return;
+      }
+
+      const line = this.#partialLine + text.slice(start, end);
+      this.#partialLine = "";
+      start = end + 1;
+      if (text.charCodeAt(end) === 0x0d) {
+        // A CR LF pair is a single line ending, even when the LF only arrives with the next chunk.
+        if (start < length) {
+          if (text.charCodeAt(start) === 0x0a) start++;
+        } else {
+          this.#skipLF = true;
+        }
+      }
+
+      this.#processLine(line);
+      // A listener may have called close(); the rest of the chunk must not be dispatched.
+      if (this.#readyState === kClosed) return;
+    }
+  }
+
+  #processLine(line) {
+    if (line === "") {
+      this.#dispatchBufferedEvent();
+      return;
+    }
+
+    const colon = line.indexOf(":");
+    if (colon === 0) return; // comment
+
+    let field, value;
+    if (colon === -1) {
+      field = line;
+      value = "";
+    } else {
+      field = line.slice(0, colon);
+      value = line.slice(line.charCodeAt(colon + 1) === 0x20 ? colon + 2 : colon + 1);
+    }
+
+    switch (field) {
+      case "data":
+        this.#dataBuffer += value + "\n";
+        break;
+      case "event":
+        this.#eventTypeBuffer = value;
+        break;
+      case "id":
+        if (!value.includes("\0")) this.#lastEventIdBuffer = value;
+        break;
+      case "retry":
+        if (isASCIIDigits(value)) this.#reconnectionTime = Math.min(Number(value), kMaxReconnectionTime);
+        break;
+    }
+  }
+
+  #dispatchBufferedEvent() {
+    // An empty line commits the id even when there is no data to dispatch.
+    this.#lastEventId = this.#lastEventIdBuffer;
+
+    const data = this.#dataBuffer;
+    const type = this.#eventTypeBuffer;
+    this.#dataBuffer = "";
+    this.#eventTypeBuffer = "";
+    if (data === "") return;
+
+    this.dispatchEvent(
+      new MessageEvent(type === "" ? "message" : type, {
+        // Every `data:` line appended a LF; the last one is not part of the payload.
+        data: data.slice(0, -1),
+        origin: this.#origin,
+        lastEventId: this.#lastEventId,
+      }),
+    );
+  }
+
+  // https://html.spec.whatwg.org/multipage/server-sent-events.html#fail-the-connection
+  #fail() {
+    this.#readyState = kClosed;
+    this.#abort();
+    this.dispatchEvent(new Event("error"));
+  }
+
+  // https://html.spec.whatwg.org/multipage/server-sent-events.html#reestablish-the-connection
+  #reestablish() {
+    this.#controller = null;
+    this.#readyState = kConnecting;
+    this.dispatchEvent(new Event("error"));
+    // The error handler may have called close().
+    if (this.#readyState !== kConnecting) return;
+
+    // Like undici, waiting to reconnect does not by itself keep the process alive; an in-flight connection does.
+    this.#reconnectTimer = setTimeout(() => {
+      this.#reconnectTimer = null;
+      this.#connect();
+    }, this.#reconnectionTime).unref();
   }
 }
+
+for (const [name, value] of [
+  ["CONNECTING", kConnecting],
+  ["OPEN", kOpen],
+  ["CLOSED", kClosed],
+]) {
+  // WebIDL constants live on both the interface and its prototype and are read-only.
+  Object.defineProperty(EventSource, name, { enumerable: true, value });
+  Object.defineProperty(EventSource.prototype, name, { enumerable: true, value });
+}
+for (const name of ["url", "withCredentials", "readyState", "close", "onopen", "onmessage", "onerror"]) {
+  Object.defineProperty(EventSource.prototype, name, { enumerable: true });
+}
+Object.defineProperty(EventSource.prototype, Symbol.toStringTag, { configurable: true, value: "EventSource" });
 
 // Add missing cookie functions
 function deleteCookie() {
