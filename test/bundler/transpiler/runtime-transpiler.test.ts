@@ -393,13 +393,14 @@ describe.concurrent("implicit strict mode for files forced to ESM", () => {
   });
 
   test("top-level return inside a TypeScript namespace body does not opt out of strict mode", async () => {
-    // Namespace bodies compile to generated closures, so a return there is
-    // not a module-level return and must not classify the file as CommonJS.
+    // Namespace bodies parse with a fresh FnOrArrowDataParse, so a return
+    // there is rejected outright (like tsc) and must not classify the file
+    // as CommonJS: the sloppy path would print 8.
     using dir = tempDir("forced-esm-ns-return", {
       "ns.mts": "namespace N {\n  if (globalThis.never) return;\n}\nvar v = 010;\nconsole.log(v);\n",
     });
     const { stdout, stderr, exitCode } = await run(dir, "ns.mts");
-    expect(stderr).toContain("Legacy octal literals cannot be used in strict mode");
+    expect(stderr).toContain("A return statement cannot be used here");
     expect(stdout).toBe("");
     expect(exitCode).toBe(1);
   });

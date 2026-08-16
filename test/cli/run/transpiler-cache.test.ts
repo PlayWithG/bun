@@ -91,12 +91,10 @@ describe("transpiler cache", () => {
       dummyFile(50 * 1024, "1", { code: '(await import("./data.hbs")).default.endsWith(".hbs")' }),
     );
     writeFileSync(join(temp_dir, "data.hbs"), "<!DOCTYPE html>\n<html></html>\n");
-    const a = bunRun(join(temp_dir, "main.js"), env);
-    expect(a.stdout).toBe("true");
+    expect(await bunRun(join(temp_dir, "main.js"), env)).toSpawn("true");
     expect(newCacheCount()).toBe(1);
     // Second run restores main.js from the cache.
-    const b = bunRun(join(temp_dir, "main.js"), env);
-    expect(b.stdout).toBe("true");
+    expect(await bunRun(join(temp_dir, "main.js"), env)).toSpawn("true");
     expect(newCacheCount()).toBe(0);
   });
   test("it is indeed content addressable", async () => {
