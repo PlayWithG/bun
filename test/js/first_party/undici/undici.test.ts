@@ -1204,6 +1204,62 @@ describe("undici", () => {
       await expect(undiciFetch("http://localhost:1/", { dispatcher } as any)).rejects.toBeInstanceOf(RangeError);
     });
 
+    it("fetch does not park the dispatcher on onData after onHeaders threw", async () => {
+      const dataReturns: any[] = [];
+      const dispatcher = {
+        dispatch(_opts: any, handler: any) {
+          handler.onConnect(() => {});
+          try {
+            handler.onHeaders(600, [], () => {}, "Weird");
+          } catch (e) {
+            handler.onError(e);
+          }
+          // Late chunks must be dropped, not enqueued into the orphaned stream until backpressure pauses us.
+          dataReturns.push(handler.onData(Buffer.from("x")));
+          dataReturns.push(handler.onData(Buffer.from("y")));
+          return true;
+        },
+      };
+      await expect(undiciFetch("http://localhost:1/", { dispatcher } as any)).rejects.toBeInstanceOf(RangeError);
+      expect(dataReturns).toEqual([true, true]);
+    });
+
+    it("dispatch sends array-valued request headers as separate lines", async () => {
+      const seen = Promise.withResolvers<string | null>();
+      await using server = Bun.serve({
+        port: 0,
+        fetch(req) {
+          seen.resolve(req.headers.get("cookie"));
+          return new Response("ok");
+        },
+      });
+      const pool = new Pool(`http://localhost:${server.port}`);
+      await dispatchLegacy(pool, { path: "/", method: "GET", headers: { cookie: ["a=1", "b=2"] } });
+      // Separate Cookie lines combine with '; ' like undici; a record init would send 'a=1,b=2'.
+      expect(await seen.promise).toBe("a=1; b=2");
+      await pool.close();
+    });
+
+    it("request(cb) ignores callbacks scheduled by a throwing dispatch()", async () => {
+      class ThrowsThenCallsBack extends Dispatcher {
+        dispatch(_opts: any, handler: any) {
+          queueMicrotask(() => {
+            handler.onConnect(() => {});
+            handler.onHeaders(200, [], () => {}, "OK");
+            handler.onComplete([]);
+          });
+          throw new Error("sync boom");
+        }
+      }
+      const calls: any[] = [];
+      new ThrowsThenCallsBack().request({ path: "/", method: "GET" }, (err: any) => {
+        calls.push(err?.message);
+      });
+      // Let the scheduled callbacks run before asserting the callback fired exactly once.
+      await new Promise<void>(resolve => queueMicrotask(() => queueMicrotask(resolve)));
+      expect(calls).toEqual(["sync boom"]);
+    });
+
     it("fetch with dispatcher errors the body when dispatch throws after headers", async () => {
       const boom = new Error("post-headers boom");
       const dispatcher = {

@@ -295,16 +295,26 @@ function parseOrigin(origin) {
 
 function headersFromDispatchOpts(headers) {
   if (headers == null) return undefined;
-  if ($isJSArray(headers)) {
-    const out = ObjectCreate(null);
-    if (headers.length > 0 && $isJSArray(headers[0])) {
-      for (const [name, value] of headers) appendHeader(out, name, value);
-    } else {
-      for (let i = 0; i + 1 < headers.length; i += 2) appendHeader(out, headers[i], headers[i + 1]);
+  // Entries form so fetch() appends repeated names as separate lines; a record init would String()-join array values.
+  const out = [];
+  const push = (name, value) => {
+    if (value === undefined || value === null) return;
+    if ($isJSArray(value)) {
+      for (const v of value) push(name, v);
+      return;
     }
-    return out;
+    out.push([String(name), String(value)]);
+  };
+  if ($isJSArray(headers)) {
+    if (headers.length > 0 && $isJSArray(headers[0])) {
+      for (const [name, value] of headers) push(name, value);
+    } else {
+      for (let i = 0; i + 1 < headers.length; i += 2) push(headers[i], headers[i + 1]);
+    }
+  } else {
+    for (const name of Object.keys(headers)) push(name, headers[name]);
   }
-  return headers;
+  return out;
 }
 
 async function* iterableToByteChunks(iterable) {
@@ -681,8 +691,11 @@ class Dispatcher extends EventEmitter {
     } catch (err) {
       removeSignal();
       destroyRequestBody(err);
+      if (completed) return;
+      // Terminal like onError: flips completed so callbacks a throwing dispatch() already scheduled are ignored.
+      completed = true;
       if (body) body.destroy(err);
-      else if (!completed) callback(err, { opaque });
+      else callback(err, { opaque });
     }
   }
 }
@@ -1116,6 +1129,8 @@ function fetchViaDispatcher(dispatcher, input, init) {
       removeSignal();
       if (!resolved) {
         resolved = true;
+        // Null so a late onData cannot park the dispatcher on the orphaned stream's backpressure.
+        streamController = null;
         reject(err);
       } else if (streamController) {
         streamController.error(err);
