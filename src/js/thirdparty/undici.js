@@ -602,6 +602,8 @@ class Dispatcher extends EventEmitter {
     try {
       this.dispatch(opts, {
         onConnect: (abort, ctx) => {
+          // A late onConnect after a terminal callback must not re-register the signal listener.
+          if (completed) return;
           abortBody = abort;
           context = ctx ?? null;
           // onConnect may fire once per redirect/retry hop; drop the previous hop's listener first.
@@ -1132,6 +1134,8 @@ function fetchViaDispatcher(dispatcher, input, init) {
         },
         {
           onConnect: abort => {
+            // A late onConnect after the promise settled must not re-register the signal listener.
+            if (resolved) return;
             abortDispatch = abort;
             // onConnect may fire once per redirect/retry hop; drop the previous hop's listener first.
             removeSignal();

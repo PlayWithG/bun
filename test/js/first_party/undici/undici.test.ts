@@ -883,6 +883,57 @@ describe("undici", () => {
       expect(await body.text()).toBe("hi");
     });
 
+    it("request() ignores onConnect after a terminal callback", async () => {
+      let adds = 0;
+      let removes = 0;
+      const signal = {
+        aborted: false,
+        on: () => {
+          adds++;
+        },
+        removeListener: () => {
+          removes++;
+        },
+      };
+      class LateConnect extends Dispatcher {
+        dispatch(_opts: any, handler: any) {
+          handler.onConnect(() => {});
+          handler.onError(new Error("boom"));
+          // A late onConnect must not re-register the abort listener with no cleanup path left.
+          handler.onConnect(() => {});
+          return true;
+        }
+      }
+      await expect(new LateConnect().request({ path: "/", method: "GET", signal: signal as any })).rejects.toThrow(
+        "boom",
+      );
+      expect(adds).toBe(removes);
+    });
+
+    it("fetch ignores onConnect after the dispatch settled", async () => {
+      let adds = 0;
+      let removes = 0;
+      const signal = {
+        aborted: false,
+        addEventListener: () => {
+          adds++;
+        },
+        removeEventListener: () => {
+          removes++;
+        },
+      };
+      const dispatcher = {
+        dispatch(_opts: any, handler: any) {
+          handler.onConnect(() => {});
+          handler.onError(new Error("boom"));
+          handler.onConnect(() => {});
+          return true;
+        },
+      };
+      await expect(undiciFetch("http://localhost:1/", { dispatcher, signal } as any)).rejects.toThrow("boom");
+      expect(adds).toBe(removes);
+    });
+
     it("request() ignores onHeaders after onError", async () => {
       const boom = new Error("boom");
       class ErrorsFirst extends Dispatcher {
