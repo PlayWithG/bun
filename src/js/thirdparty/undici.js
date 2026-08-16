@@ -306,8 +306,7 @@ async function bodyFromDispatchOpts(body) {
   return body;
 }
 
-// One request over fetch(), driving either the legacy undici handler
-// callbacks (onHeaders/onData/...) or the v7 controller ones (onResponseStart/...).
+// One fetch()-backed request driving legacy (onHeaders/onData) or v7 controller (onResponseStart/...) handler callbacks.
 function fetchDispatch(origin, opts, handler) {
   const isControllerStyle =
     typeof handler.onRequestStart === "function" || typeof handler.onResponseStart === "function";
