@@ -371,8 +371,7 @@ function fetchDispatch(origin, opts, handler) {
     if (typeof path !== "string" || path.charCodeAt(0) !== 0x2f /* '/' */) {
       throw new InvalidArgumentError("path must start with '/'");
     }
-    // Concatenate instead of resolving against the origin, so a path like
-    // '//other.host/x' cannot change the authority the request goes to.
+    // Concatenate rather than URL-resolve so '//other.host/x' cannot change the request authority.
     const base = origin instanceof URL ? origin : new URL(String(origin));
     const url = new URL(base.origin + path);
     const { query } = opts;
@@ -539,8 +538,7 @@ class Dispatcher extends EventEmitter {
               resumeBody();
             },
             destroy(err, cb) {
-              // body.destroy() before the response ended cancels the request,
-              // so the dispatch loop is not left parked forever.
+              // Early body.destroy() cancels the request so the dispatch loop is not left parked.
               if (!completed) abortBody?.(err ?? undefined);
               cb(err);
             },
