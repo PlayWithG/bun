@@ -824,6 +824,7 @@ describe("undici", () => {
     });
 
     it("fetch ignores dispatcher callbacks after onComplete", async () => {
+      let lateError: unknown = null;
       const dispatcher = {
         dispatch(_opts: any, handler: any) {
           handler.onConnect(() => {});
@@ -831,13 +832,55 @@ describe("undici", () => {
           handler.onData(Buffer.from("hi"));
           handler.onComplete([]);
           // Late callbacks must be no-ops, not TypeErrors thrown back into the dispatcher.
-          handler.onData(Buffer.from("late"));
-          handler.onComplete([]);
+          try {
+            handler.onData(Buffer.from("late"));
+            handler.onComplete([]);
+          } catch (err) {
+            lateError = err;
+          }
           return true;
         },
       };
       const res = await undiciFetch("http://localhost:1/", { dispatcher } as any);
       expect(await res.text()).toBe("hi");
+      expect(lateError).toBe(null);
+    });
+
+    it("request(cb) ignores a terminal callback after onError", async () => {
+      const boom = new Error("boom");
+      class TwoTerminals extends Dispatcher {
+        dispatch(_opts: any, handler: any) {
+          handler.onConnect(() => {});
+          handler.onError(boom);
+          // A second terminal callback must not invoke the user callback again.
+          handler.onComplete([]);
+          return true;
+        }
+      }
+      const calls: any[] = [];
+      await new Promise<void>(resolve => {
+        new TwoTerminals().request({ path: "/", method: "GET" }, (err: any) => {
+          calls.push(err);
+          resolve();
+        });
+      });
+      expect(calls).toEqual([boom]);
+    });
+
+    it("request() ignores onData after onComplete", async () => {
+      class LateData extends Dispatcher {
+        dispatch(_opts: any, handler: any) {
+          handler.onConnect(() => {});
+          handler.onHeaders(200, [], () => {}, "OK");
+          handler.onData(Buffer.from("hi"));
+          handler.onComplete([]);
+          // A late chunk must not push after EOF and error the delivered body.
+          handler.onData(Buffer.from("late"));
+          return true;
+        }
+      }
+      const { body } = await new LateData().request({ path: "/", method: "GET" });
+      expect(await body.text()).toBe("hi");
     });
 
     it("request() ignores onHeaders after onError", async () => {

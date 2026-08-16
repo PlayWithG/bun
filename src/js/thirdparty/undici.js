@@ -650,9 +650,10 @@ class Dispatcher extends EventEmitter {
           });
           return true;
         },
-        // Copy (the dispatch contract only guarantees the chunk during the callback); drop chunks sent before onHeaders.
-        onData: chunk => (body === null ? true : body.push(Buffer.from(chunk))),
+        // Copy (the dispatch contract only guarantees the chunk during the callback); drop chunks outside onHeaders..onComplete.
+        onData: chunk => (completed || body === null ? true : body.push(Buffer.from(chunk))),
         onComplete: rawTrailers => {
+          if (completed) return;
           completed = true;
           removeSignal();
           if (body === null) {
@@ -667,6 +668,7 @@ class Dispatcher extends EventEmitter {
           body.push(null);
         },
         onError: err => {
+          if (completed) return;
           completed = true;
           removeSignal();
           destroyRequestBody(err);
