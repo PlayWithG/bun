@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { Readable } from "node:stream";
-import { Agent, Client, Pool, errors, getGlobalDispatcher, request } from "undici";
+import { Agent, Client, Pool, RetryAgent, errors, getGlobalDispatcher, request } from "undici";
 
 import { createServer } from "../../../http-test-server";
 
@@ -386,6 +386,96 @@ describe("undici", () => {
       for await (const chunk of body) break;
       await cancelled.promise;
       await pool.destroy();
+    });
+
+    it("close() waits for in-flight requests to finish", async () => {
+      const gate = Promise.withResolvers<void>();
+      await using server = Bun.serve({
+        port: 0,
+        async fetch() {
+          await gate.promise;
+          return new Response("done");
+        },
+      });
+      const pool = new Pool(`http://localhost:${server.port}`);
+      const events: string[] = [];
+      const completed = new Promise<void>((resolve, reject) => {
+        pool.dispatch(
+          { path: "/", method: "GET" },
+          {
+            onConnect: () => {},
+            onHeaders: () => true,
+            onData: () => true,
+            onComplete: () => {
+              events.push("complete");
+              resolve();
+            },
+            onError: reject,
+          },
+        );
+      });
+      const closed = pool.close().then(() => {
+        events.push("closed");
+      });
+      gate.resolve();
+      await Promise.all([completed, closed]);
+      expect(events).toEqual(["complete", "closed"]);
+    });
+
+    it("destroy() aborts in-flight requests with ClientDestroyedError", async () => {
+      await using server = Bun.serve({
+        port: 0,
+        fetch() {
+          return new Promise<Response>(() => {});
+        },
+      });
+      const pool = new Pool(`http://localhost:${server.port}`);
+      const errPromise = new Promise<any>((resolve, reject) => {
+        pool.dispatch(
+          { path: "/", method: "GET" },
+          {
+            onConnect: () => {},
+            onHeaders: () => reject(new Error("should not receive headers")),
+            onData: () => {},
+            onComplete: () => reject(new Error("should not complete")),
+            onError: resolve,
+          },
+        );
+      });
+      await pool.destroy();
+      const err = await errPromise;
+      expect(err.code).toBe("UND_ERR_DESTROYED");
+    });
+
+    it("abort() from onData on the final chunk delivers onError, not onComplete", async () => {
+      const pool = new Pool(hostUrl);
+      let abortFn: ((reason?: Error) => void) | undefined;
+      const err = await new Promise<any>((resolve, reject) => {
+        pool.dispatch(
+          { path: "/get", method: "GET" },
+          {
+            onConnect: (abort: (reason?: Error) => void) => {
+              abortFn = abort;
+            },
+            onHeaders: () => true,
+            onData: () => {
+              abortFn!();
+              return true;
+            },
+            onComplete: () => reject(new Error("should not complete")),
+            onError: resolve,
+          },
+        );
+      });
+      expect(err.code).toBe("UND_ERR_ABORTED");
+      await pool.destroy();
+    });
+
+    it("RetryAgent.close() closes the wrapped dispatcher", async () => {
+      const agent = new Agent();
+      const retry = new RetryAgent(agent);
+      await retry.close();
+      expect(agent.closed).toBe(true);
     });
 
     it("close(callback) invokes the callback", async () => {

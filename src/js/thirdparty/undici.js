@@ -312,7 +312,7 @@ function bodyFromDispatchOpts(body) {
 }
 
 // One fetch()-backed request driving legacy (onHeaders/onData) or v7 controller (onResponseStart/...) handler callbacks.
-function fetchDispatch(origin, opts, handler) {
+function fetchDispatch(origin, opts, handler, pending) {
   const isControllerStyle =
     typeof handler.onRequestStart === "function" || typeof handler.onResponseStart === "function";
 
@@ -366,7 +366,11 @@ function fetchDispatch(origin, opts, handler) {
     else if (typeof signal.on === "function") signal.on("abort", onSignalAbort);
   }
 
-  (async () => {
+  // Tracked so the dispatcher can drain in-flight requests on close() and abort them on destroy().
+  const entry = { abort, done: null };
+  pending?.add(entry);
+
+  entry.done = (async () => {
     const path = opts.path || "/";
     if (typeof path !== "string" || path.charCodeAt(0) !== 0x2f /* '/' */) {
       throw new InvalidArgumentError("path must start with '/'");
@@ -397,7 +401,7 @@ function fetchDispatch(origin, opts, handler) {
     });
 
     // fetch() already decompressed the body, so drop the encoding headers.
-    const responseHeaders = resp.headers.toJSON();
+    const responseHeaders = { __proto__: null, ...resp.headers.toJSON() };
     if (method !== "HEAD") {
       delete responseHeaders["content-encoding"];
       delete responseHeaders["content-length"];
@@ -434,6 +438,9 @@ function fetchDispatch(origin, opts, handler) {
       }
     }
 
+    // Covers abort() called from onHeaders on an empty body or from onData on the final chunk.
+    if (aborted) throw abortReason;
+
     if (isControllerStyle) handler.onResponseEnd?.(controller, { __proto__: null });
     else handler.onComplete?.([]);
   })()
@@ -451,6 +458,7 @@ function fetchDispatch(origin, opts, handler) {
       throw err;
     })
     .finally(() => {
+      pending?.delete(entry);
       if (!onSignalAbort) return;
       if (typeof signal.removeEventListener === "function") signal.removeEventListener("abort", onSignalAbort);
       else if (typeof signal.removeListener === "function") signal.removeListener("abort", onSignalAbort);
@@ -577,10 +585,16 @@ class Dispatcher extends EventEmitter {
 }
 
 const kDispatch = Symbol("kDispatch");
+const kPending = Symbol("kPending");
 
 class DispatcherBase extends Dispatcher {
   #closed = false;
   #destroyed = false;
+
+  constructor() {
+    super();
+    this[kPending] = new Set();
+  }
 
   get closed() {
     return this.#closed;
@@ -602,7 +616,8 @@ class DispatcherBase extends Dispatcher {
       return;
     }
     this.#closed = true;
-    queueMicrotask(() => callback(null, null));
+    // Drain: resolve only after in-flight requests settle, like undici.
+    Promise.allSettled(Array.from(this[kPending], entry => entry.done)).then(() => callback(null, null));
   }
 
   destroy(err, callback) {
@@ -618,7 +633,9 @@ class DispatcherBase extends Dispatcher {
     if (typeof callback !== "function") throw new InvalidArgumentError("invalid callback");
     this.#destroyed = true;
     this.#closed = true;
-    queueMicrotask(() => callback(null, null));
+    const reason = err ?? new ClientDestroyedError("The client is destroyed");
+    for (const entry of this[kPending]) entry.abort(reason);
+    Promise.allSettled(Array.from(this[kPending], entry => entry.done)).then(() => callback(null, null));
   }
 
   dispatch(opts, handler) {
@@ -657,7 +674,7 @@ class Agent extends DispatcherBase {
 
   [kDispatch](opts, handler) {
     if (!opts.origin) throw new InvalidArgumentError("opts.origin must be a non-empty string or URL.");
-    return fetchDispatch(opts.origin, opts, handler);
+    return fetchDispatch(opts.origin, opts, handler, this[kPending]);
   }
 }
 
@@ -671,7 +688,7 @@ class Pool extends DispatcherBase {
   }
 
   [kDispatch](opts, handler) {
-    return fetchDispatch(this.#origin, opts, handler);
+    return fetchDispatch(this.#origin, opts, handler, this[kPending]);
   }
 }
 
@@ -688,7 +705,7 @@ class BalancedPool extends DispatcherBase {
   [kDispatch](opts, handler) {
     const upstream = this.#upstreams[0];
     if (!upstream) throw new BalancedPoolMissingUpstreamError("No upstream has been added to the BalancedPool");
-    return fetchDispatch(upstream, opts, handler);
+    return fetchDispatch(upstream, opts, handler, this[kPending]);
   }
 }
 
@@ -702,7 +719,7 @@ class Client extends DispatcherBase {
   }
 
   [kDispatch](opts, handler) {
-    return fetchDispatch(this.#origin, opts, handler);
+    return fetchDispatch(this.#origin, opts, handler, this[kPending]);
   }
 }
 
@@ -731,6 +748,14 @@ class RetryAgent extends DispatcherBase {
 
   [kDispatch](opts, handler) {
     return this.#agent.dispatch(opts, handler);
+  }
+
+  close(callback) {
+    return this.#agent.close(callback);
+  }
+
+  destroy(err, callback) {
+    return this.#agent.destroy(err, callback);
   }
 }
 
