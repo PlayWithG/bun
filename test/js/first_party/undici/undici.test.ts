@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
-import { request } from "undici";
+import { Agent, Client, Pool, errors, getGlobalDispatcher, request } from "undici";
 
 import { createServer } from "../../../http-test-server";
 
@@ -154,6 +154,172 @@ describe("undici", () => {
     //   const json = (await body.json()) as { form: { foo: string } };
     //   expect(json.form.foo).toBe("bar");
     // });
+  });
+
+  describe("Dispatcher", () => {
+    // Drives dispatch() with the legacy handler interface and collects the response.
+    function dispatchLegacy(dispatcher: any, opts: any) {
+      return new Promise<{ statusCode: number; headers: Record<string, string>; body: string }>((resolve, reject) => {
+        let statusCode = 0;
+        const headers: Record<string, string> = {};
+        const chunks: Buffer[] = [];
+        dispatcher.dispatch(opts, {
+          onConnect: () => {},
+          onHeaders: (status: number, rawHeaders: Buffer[]) => {
+            statusCode = status;
+            for (let i = 0; i + 1 < rawHeaders.length; i += 2) {
+              headers[String(rawHeaders[i]).toLowerCase()] = String(rawHeaders[i + 1]);
+            }
+            return true;
+          },
+          onData: (chunk: Buffer) => {
+            chunks.push(chunk);
+            return true;
+          },
+          onComplete: () => resolve({ statusCode, headers, body: Buffer.concat(chunks).toString() }),
+          onError: reject,
+        });
+      });
+    }
+
+    it("Pool exposes dispatch(), close() and destroy()", () => {
+      const pool = new Pool(hostUrl);
+      expect(typeof pool.dispatch).toBe("function");
+      expect(typeof pool.close).toBe("function");
+      expect(typeof pool.destroy).toBe("function");
+      expect(typeof pool.request).toBe("function");
+    });
+
+    it("Pool.dispatch performs a request with the legacy handler interface", async () => {
+      const pool = new Pool(hostUrl);
+      const res = await dispatchLegacy(pool, { path: "/get", method: "GET" });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["content-type"]).toBe("application/json");
+      expect(JSON.parse(res.body)).toEqual({ url: `${hostUrl}/get`, method: "GET" });
+      await pool.close();
+    });
+
+    it("Pool.dispatch performs a request with the controller handler interface", async () => {
+      const pool = new Pool(hostUrl);
+      const res = await new Promise<{ statusCode: number; headers: any; body: string; ended: boolean }>(
+        (resolve, reject) => {
+          let statusCode = 0;
+          let headers: any;
+          let started = false;
+          const chunks: Buffer[] = [];
+          pool.dispatch(
+            { path: "/post", method: "POST", body: "Hello world" },
+            {
+              onRequestStart: () => {
+                started = true;
+              },
+              onResponseStart: (_controller: any, status: number, responseHeaders: any) => {
+                statusCode = status;
+                headers = responseHeaders;
+              },
+              onResponseData: (_controller: any, chunk: Buffer) => {
+                chunks.push(chunk);
+              },
+              onResponseEnd: () => {
+                resolve({ statusCode, headers, body: Buffer.concat(chunks).toString(), ended: started });
+              },
+              onResponseError: (_controller: any, err: Error) => reject(err),
+            },
+          );
+        },
+      );
+      expect(res.ended).toBe(true);
+      expect(res.statusCode).toBe(201);
+      expect(res.headers["content-type"]).toBe("application/json");
+      expect((JSON.parse(res.body) as { data: string }).data).toBe("Hello world");
+      await pool.destroy();
+    });
+
+    it("Pool.request resolves with a readable body", async () => {
+      const pool = new Pool(hostUrl);
+      const { statusCode, headers, body } = await pool.request({ path: "/get", method: "GET" });
+      expect(statusCode).toBe(200);
+      expect(headers["content-type"]).toBe("application/json");
+      const chunks: Buffer[] = [];
+      for await (const chunk of body) chunks.push(chunk);
+      expect(JSON.parse(Buffer.concat(chunks).toString())).toEqual({ url: `${hostUrl}/get`, method: "GET" });
+      await pool.close();
+    });
+
+    it("Client.request sends a request body", async () => {
+      const client = new Client(hostUrl);
+      const { statusCode, body } = await client.request({ path: "/post", method: "POST", body: "ping" });
+      expect(statusCode).toBe(201);
+      const chunks: Buffer[] = [];
+      for await (const chunk of body) chunks.push(chunk);
+      expect((JSON.parse(Buffer.concat(chunks).toString()) as { data: string }).data).toBe("ping");
+      await client.close();
+    });
+
+    it("close() resolves and later dispatches fail with ClientClosedError", async () => {
+      const pool = new Pool(hostUrl);
+      await pool.close();
+      expect(pool.closed).toBe(true);
+      await expect(dispatchLegacy(pool, { path: "/get", method: "GET" })).rejects.toHaveProperty(
+        "code",
+        "UND_ERR_CLOSED",
+      );
+      await expect(pool.request({ path: "/get", method: "GET" })).rejects.toBeInstanceOf(errors.ClientClosedError);
+    });
+
+    it("destroy() resolves and later requests fail with ClientDestroyedError", async () => {
+      const pool = new Pool(hostUrl);
+      await pool.destroy();
+      expect(pool.destroyed).toBe(true);
+      await expect(pool.request({ path: "/get", method: "GET" })).rejects.toHaveProperty("code", "UND_ERR_DESTROYED");
+    });
+
+    it("close(callback) invokes the callback", async () => {
+      const pool = new Pool(hostUrl);
+      const { promise, resolve, reject } = Promise.withResolvers<void>();
+      pool.close((err: Error | null) => (err ? reject(err) : resolve()));
+      await promise;
+      expect(pool.closed).toBe(true);
+    });
+
+    it("aborting from onConnect rejects with UND_ERR_ABORTED", async () => {
+      const pool = new Pool(hostUrl);
+      const err = await new Promise<any>((resolve, reject) => {
+        pool.dispatch(
+          { path: "/get", method: "GET" },
+          {
+            onConnect: (abort: (reason?: Error) => void) => abort(),
+            onHeaders: () => reject(new Error("should not receive headers")),
+            onData: () => {},
+            onComplete: () => reject(new Error("should not complete")),
+            onError: resolve,
+          },
+        );
+      });
+      expect(err.code).toBe("UND_ERR_ABORTED");
+      await pool.close();
+    });
+
+    it("Agent dispatches using opts.origin", async () => {
+      const agent = new Agent();
+      const res = await dispatchLegacy(agent, { origin: hostUrl, path: "/get", method: "GET" });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ url: `${hostUrl}/get`, method: "GET" });
+      await agent.close();
+    });
+
+    it("getGlobalDispatcher returns a functional dispatcher", async () => {
+      const dispatcher = getGlobalDispatcher();
+      expect(typeof dispatcher.dispatch).toBe("function");
+      expect(typeof dispatcher.close).toBe("function");
+      expect(typeof dispatcher.destroy).toBe("function");
+      const res = await dispatchLegacy(dispatcher, { origin: hostUrl, path: "/get", method: "GET" });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it("new Pool() without an origin throws InvalidArgumentError", () => {
+      expect(() => new (Pool as any)()).toThrow(errors.InvalidArgumentError);
+    });
   });
 });
 

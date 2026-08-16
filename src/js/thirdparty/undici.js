@@ -1,6 +1,7 @@
 const EventEmitter = require("node:events");
 const StreamModule = require("node:stream");
 const { Readable } = StreamModule;
+const { Buffer } = require("node:buffer");
 const { _ReadableFromWeb: ReadableFromWeb } = require("internal/webstreams_adapters");
 
 const ObjectCreate = Object.create;
@@ -262,17 +263,365 @@ class MockAgent {
 
 function mockErrors() {}
 
-class Dispatcher extends EventEmitter {}
-class Agent extends Dispatcher {}
-class Pool extends Dispatcher {
-  request() {}
-}
-class BalancedPool extends Dispatcher {}
-class Client extends Dispatcher {
-  request() {}
+function appendHeader(headers, name, value) {
+  if (value === undefined || value === null) return;
+  name = String(name);
+  if (Array.isArray(value)) {
+    for (const v of value) appendHeader(headers, name, v);
+    return;
+  }
+  const existing = headers[name];
+  if (existing === undefined) headers[name] = String(value);
+  else if (Array.isArray(existing)) existing.push(String(value));
+  else headers[name] = [existing, String(value)];
 }
 
-class DispatcherBase extends EventEmitter {}
+function headersFromDispatchOpts(headers) {
+  if (headers == null) return kEmptyObject;
+  if (Array.isArray(headers)) {
+    const out = {};
+    if (headers.length > 0 && Array.isArray(headers[0])) {
+      for (const [name, value] of headers) appendHeader(out, name, value);
+    } else {
+      for (let i = 0; i + 1 < headers.length; i += 2) appendHeader(out, headers[i], headers[i + 1]);
+    }
+    return out;
+  }
+  return headers;
+}
+
+async function bodyFromDispatchOpts(body) {
+  if (body == null) return null;
+  if (typeof body === "string") return body;
+  if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return body;
+  if (body instanceof Blob || body instanceof ReadableStream) return body;
+  if (body instanceof FormData || body instanceof URLSearchParams) return body;
+  if (typeof body[Symbol.asyncIterator] === "function" || typeof body[Symbol.iterator] === "function") {
+    const chunks = [];
+    for await (const chunk of body) {
+      chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+    }
+    return Buffer.concat(chunks);
+  }
+  return body;
+}
+
+// Performs one request over fetch() and drives the undici handler callbacks.
+// Supports both the legacy handler interface (onConnect/onHeaders/onData/
+// onComplete/onError) and the undici v7 controller interface (onRequestStart/
+// onResponseStart/onResponseData/onResponseEnd/onResponseError).
+function fetchDispatch(origin, opts, handler) {
+  const isControllerStyle =
+    typeof handler.onRequestStart === "function" || typeof handler.onResponseStart === "function";
+
+  const ac = new AbortController();
+  let aborted = false;
+  let abortReason;
+  const abort = reason => {
+    if (aborted) return;
+    aborted = true;
+    abortReason = reason ?? new RequestAbortedError("Request aborted");
+    ac.abort(abortReason);
+  };
+
+  let paused = false;
+  let resumeResolve = null;
+  const resume = () => {
+    paused = false;
+    if (resumeResolve) {
+      const r = resumeResolve;
+      resumeResolve = null;
+      r();
+    }
+  };
+
+  const controller = {
+    abort,
+    pause() {
+      paused = true;
+    },
+    resume,
+    get aborted() {
+      return aborted;
+    },
+    get reason() {
+      return abortReason;
+    },
+    get paused() {
+      return paused;
+    },
+  };
+
+  (async () => {
+    const url = new URL(opts.path || "/", origin);
+    if (opts.query) url.search = new URLSearchParams(opts.query).toString();
+    const method = opts.method ? String(opts.method).toUpperCase() : "GET";
+    const body = await bodyFromDispatchOpts(opts.body);
+
+    if (isControllerStyle) handler.onRequestStart?.(controller, kEmptyObject);
+    else handler.onConnect?.(abort);
+    if (aborted) throw abortReason;
+
+    const maxRedirections = opts.maxRedirections;
+    const followRedirects = typeof maxRedirections === "number" && maxRedirections > 0;
+    const resp = await fetch(url, {
+      method,
+      headers: headersFromDispatchOpts(opts.headers),
+      body,
+      redirect: followRedirects ? "follow" : "manual",
+      maxRedirects: followRedirects ? maxRedirections : undefined,
+      signal: ac.signal,
+      keepalive: !opts.reset,
+    });
+
+    // fetch() decompresses the body, so the encoding headers no longer
+    // describe the bytes the handler will see.
+    const responseHeaders = resp.headers.toJSON();
+    if (method !== "HEAD") {
+      delete responseHeaders["content-encoding"];
+      delete responseHeaders["content-length"];
+    }
+
+    if (isControllerStyle) {
+      handler.onResponseStart?.(controller, resp.status, responseHeaders, resp.statusText);
+    } else if (typeof handler.onHeaders === "function") {
+      const rawHeaders = [];
+      for (const name in responseHeaders) {
+        const value = responseHeaders[name];
+        if (Array.isArray(value)) {
+          for (const v of value) rawHeaders.push(Buffer.from(name), Buffer.from(v));
+        } else {
+          rawHeaders.push(Buffer.from(name), Buffer.from(value));
+        }
+      }
+      if (handler.onHeaders(resp.status, rawHeaders, resume, resp.statusText) === false) paused = true;
+    }
+
+    if (resp.body) {
+      for await (const chunk of resp.body) {
+        if (aborted) throw abortReason;
+        while (paused) {
+          await new Promise(r => {
+            resumeResolve = r;
+          });
+        }
+        const buf = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
+        const ret = isControllerStyle ? handler.onResponseData?.(controller, buf) : handler.onData?.(buf);
+        if (ret === false) paused = true;
+      }
+    }
+
+    if (isControllerStyle) handler.onResponseEnd?.(controller, kEmptyObject);
+    else handler.onComplete?.([]);
+  })().catch(err => {
+    if (isControllerStyle && typeof handler.onResponseError === "function") {
+      handler.onResponseError(controller, err);
+      return;
+    }
+    if (typeof handler.onError === "function") {
+      handler.onError(err);
+      return;
+    }
+    throw err;
+  });
+
+  return true;
+}
+
+class Dispatcher extends EventEmitter {
+  dispatch() {
+    throw new Error("not implemented");
+  }
+
+  close() {
+    throw new Error("not implemented");
+  }
+
+  destroy() {
+    throw new Error("not implemented");
+  }
+
+  request(opts, callback) {
+    if (callback === undefined) {
+      return new Promise((resolve, reject) => {
+        this.request(opts, (err, data) => (err ? reject(err) : resolve(data)));
+      });
+    }
+    if (typeof callback !== "function") throw new InvalidArgumentError("invalid callback");
+    if (!opts || typeof opts !== "object") {
+      queueMicrotask(() => callback(new InvalidArgumentError("opts must be an object."), null));
+      return;
+    }
+
+    let body = null;
+    let resumeBody = null;
+    try {
+      this.dispatch(opts, {
+        onConnect: () => {},
+        onHeaders: (statusCode, rawHeaders, resume, _statusText) => {
+          resumeBody = resume;
+          body = new Readable({
+            read() {
+              resumeBody();
+            },
+          });
+          const headers = {};
+          for (let i = 0; i + 1 < rawHeaders.length; i += 2) {
+            appendHeader(headers, String(rawHeaders[i]).toLowerCase(), String(rawHeaders[i + 1]));
+          }
+          callback(null, {
+            statusCode,
+            headers,
+            body,
+            trailers: kEmptyObject,
+            opaque: opts.opaque ?? null,
+            context: kEmptyObject,
+          });
+          return true;
+        },
+        onData: chunk => body.push(chunk),
+        onComplete: () => {
+          body.push(null);
+        },
+        onError: err => {
+          if (body) body.destroy(err);
+          else callback(err, null);
+        },
+      });
+    } catch (err) {
+      // dispatch() routes errors through onError when present, so this only
+      // fires for dispatchers that throw synchronously (e.g. the base class).
+      if (body) body.destroy(err);
+      else callback(err, null);
+    }
+  }
+}
+
+const kDispatch = Symbol("kDispatch");
+
+class DispatcherBase extends Dispatcher {
+  #closed = false;
+  #destroyed = false;
+
+  get closed() {
+    return this.#closed;
+  }
+
+  get destroyed() {
+    return this.#destroyed;
+  }
+
+  close(callback) {
+    if (callback === undefined) {
+      return new Promise((resolve, reject) => {
+        this.close((err, data) => (err ? reject(err) : resolve(data)));
+      });
+    }
+    if (typeof callback !== "function") throw new InvalidArgumentError("invalid callback");
+    if (this.#destroyed) {
+      queueMicrotask(() => callback(new ClientDestroyedError("The client is destroyed"), null));
+      return;
+    }
+    this.#closed = true;
+    queueMicrotask(() => callback(null, null));
+  }
+
+  destroy(err, callback) {
+    if (typeof err === "function") {
+      callback = err;
+      err = null;
+    }
+    if (callback === undefined) {
+      return new Promise((resolve, reject) => {
+        this.destroy(err, (e, data) => (e ? reject(e) : resolve(data)));
+      });
+    }
+    if (typeof callback !== "function") throw new InvalidArgumentError("invalid callback");
+    this.#destroyed = true;
+    this.#closed = true;
+    queueMicrotask(() => callback(null, null));
+  }
+
+  dispatch(opts, handler) {
+    if (!handler || typeof handler !== "object") throw new InvalidArgumentError("handler must be an object");
+    try {
+      if (!opts || typeof opts !== "object") throw new InvalidArgumentError("opts must be an object.");
+      if (this.#destroyed) throw new ClientDestroyedError("The client is destroyed");
+      if (this.#closed) throw new ClientClosedError("The client is closed");
+      return this[kDispatch](opts, handler);
+    } catch (err) {
+      if (typeof handler.onError === "function") {
+        handler.onError(err);
+        return false;
+      }
+      if (typeof handler.onResponseError === "function") {
+        handler.onResponseError(null, err);
+        return false;
+      }
+      throw err;
+    }
+  }
+
+  [kDispatch]() {
+    notImplemented();
+  }
+}
+
+class Agent extends DispatcherBase {
+  constructor(_options) {
+    super();
+  }
+
+  [kDispatch](opts, handler) {
+    if (!opts.origin) throw new InvalidArgumentError("opts.origin must be a non-empty string or URL.");
+    return fetchDispatch(opts.origin, opts, handler);
+  }
+}
+
+class Pool extends DispatcherBase {
+  #origin;
+
+  constructor(origin, _options) {
+    super();
+    if (origin == null) throw new InvalidArgumentError("Origin must be a string or URL.");
+    this.#origin = origin instanceof URL ? origin : new URL(String(origin));
+  }
+
+  [kDispatch](opts, handler) {
+    return fetchDispatch(this.#origin, opts, handler);
+  }
+}
+
+class BalancedPool extends DispatcherBase {
+  #upstreams;
+
+  constructor(upstreams = [], _options) {
+    super();
+    this.#upstreams = (Array.isArray(upstreams) ? upstreams : [upstreams]).map(upstream =>
+      upstream instanceof URL ? upstream : new URL(String(upstream)),
+    );
+  }
+
+  [kDispatch](opts, handler) {
+    const upstream = this.#upstreams[0];
+    if (!upstream) throw new BalancedPoolMissingUpstreamError("No upstream has been added to the BalancedPool");
+    return fetchDispatch(upstream, opts, handler);
+  }
+}
+
+class Client extends DispatcherBase {
+  #origin;
+
+  constructor(origin, _options) {
+    super();
+    if (origin == null) throw new InvalidArgumentError("Origin must be a string or URL.");
+    this.#origin = origin instanceof URL ? origin : new URL(String(origin));
+  }
+
+  [kDispatch](opts, handler) {
+    return fetchDispatch(this.#origin, opts, handler);
+  }
+}
 
 class ProxyAgent extends DispatcherBase {
   constructor() {
@@ -286,9 +635,19 @@ class EnvHttpProxyAgent extends DispatcherBase {
   }
 }
 
-class RetryAgent extends Dispatcher {
-  constructor() {
+class RetryAgent extends DispatcherBase {
+  #agent;
+
+  constructor(agent, _options) {
     super();
+    if (!agent || typeof agent.dispatch !== "function") {
+      throw new InvalidArgumentError("Argument opts.agent must implement Agent");
+    }
+    this.#agent = agent;
+  }
+
+  [kDispatch](opts, handler) {
+    return this.#agent.dispatch(opts, handler);
   }
 }
 
@@ -324,16 +683,46 @@ class BodyTimeoutError extends UndiciError {}
 class RequestContentLengthMismatchError extends UndiciError {}
 class ConnectTimeoutError extends UndiciError {}
 class ResponseStatusCodeError extends UndiciError {}
-class InvalidArgumentError extends UndiciError {}
+class InvalidArgumentError extends UndiciError {
+  constructor(message) {
+    super(message);
+    this.name = "InvalidArgumentError";
+    this.code = "UND_ERR_INVALID_ARG";
+  }
+}
 class InvalidReturnValueError extends UndiciError {}
-class RequestAbortedError extends AbortError {}
-class ClientDestroyedError extends UndiciError {}
-class ClientClosedError extends UndiciError {}
+class RequestAbortedError extends AbortError {
+  constructor(message) {
+    super(message);
+    this.name = "AbortError";
+    this.code = "UND_ERR_ABORTED";
+  }
+}
+class ClientDestroyedError extends UndiciError {
+  constructor(message) {
+    super(message);
+    this.name = "ClientDestroyedError";
+    this.code = "UND_ERR_DESTROYED";
+  }
+}
+class ClientClosedError extends UndiciError {
+  constructor(message) {
+    super(message);
+    this.name = "ClientClosedError";
+    this.code = "UND_ERR_CLOSED";
+  }
+}
 class InformationalError extends UndiciError {}
 class SocketError extends UndiciError {}
 class NotSupportedError extends UndiciError {}
 class ResponseContentLengthMismatchError extends UndiciError {}
-class BalancedPoolMissingUpstreamError extends UndiciError {}
+class BalancedPoolMissingUpstreamError extends UndiciError {
+  constructor(message) {
+    super(message);
+    this.name = "MissingUpstreamError";
+    this.code = "UND_ERR_BPL_MISSING_UPSTREAM";
+  }
+}
 class ResponseExceededMaxSizeError extends UndiciError {}
 class RequestRetryError extends UndiciError {}
 class SecureProxyConnectionError extends UndiciError {}
@@ -412,11 +801,14 @@ let globalDispatcher;
 
 // Add missing dispatcher functions
 function setGlobalDispatcher(dispatcher) {
+  if (!dispatcher || typeof dispatcher.dispatch !== "function") {
+    throw new InvalidArgumentError("Argument agent must implement Agent");
+  }
   globalDispatcher = dispatcher;
 }
 
 function getGlobalDispatcher() {
-  return (globalDispatcher ??= new Dispatcher());
+  return (globalDispatcher ??= new Agent());
 }
 
 // Add missing origin functions
