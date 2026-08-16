@@ -257,6 +257,17 @@ describe("undici", () => {
       await pool.close();
     });
 
+    it("request() body reports bodyUsed after direct iteration", async () => {
+      const pool = new Pool(hostUrl);
+      const { body } = await pool.request({ path: "/get", method: "GET" });
+      for await (const chunk of body) {
+        // drain directly instead of via the mixin
+      }
+      expect(body.bodyUsed).toBe(true);
+      await expect(body.text()).rejects.toThrow("unusable");
+      await pool.close();
+    });
+
     it("Pool.request honors opts.signal", async () => {
       await using server = Bun.serve({
         port: 0,
@@ -351,6 +362,15 @@ describe("undici", () => {
       const res = await dispatchLegacy(pool, { path: "//evil.example/x", method: "GET" });
       expect(res.statusCode).toBe(404);
       expect(JSON.parse(res.body).url).toStartWith(hostUrl);
+      await pool.close();
+    });
+
+    it("dispatch rejects opts.query combined with a path that already has one", async () => {
+      const pool = new Pool(hostUrl);
+      await expect(dispatchLegacy(pool, { path: "/get?a=1", method: "GET", query: { b: "2" } })).rejects.toHaveProperty(
+        "code",
+        "UND_ERR_INVALID_ARG",
+      );
       await pool.close();
     });
 
@@ -649,12 +669,33 @@ describe("undici", () => {
     it("fetch with dispatcher rejects on a non-constructible status instead of hanging", async () => {
       const dispatcher = {
         dispatch(_opts: any, handler: any) {
+          // Route the onHeaders throw through onError, like the builtin dispatchers do.
+          queueMicrotask(() => {
+            try {
+              handler.onHeaders(600, [], () => {}, "Weird");
+            } catch (e) {
+              handler.onError(e);
+            }
+          });
           handler.onConnect(() => {});
-          handler.onHeaders(600, [], () => {}, "Weird");
           return true;
         },
       };
       await expect(undiciFetch("http://localhost:1/", { dispatcher } as any)).rejects.toBeInstanceOf(RangeError);
+    });
+
+    it("fetch with dispatcher errors the body when dispatch throws after headers", async () => {
+      const boom = new Error("post-headers boom");
+      const dispatcher = {
+        dispatch(_opts: any, handler: any) {
+          handler.onConnect(() => {});
+          handler.onHeaders(200, [], () => {}, "OK");
+          throw boom;
+        },
+      };
+      const res = await undiciFetch("http://localhost:1/", { dispatcher } as any);
+      expect(res.status).toBe(200);
+      await expect(res.text()).rejects.toBe(boom);
     });
 
     it("close(callback) invokes the callback", async () => {

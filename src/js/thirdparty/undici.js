@@ -71,12 +71,11 @@ class BodyReadable extends ReadableFromWeb {
   }
 
   get bodyUsed() {
-    // return this.#response.bodyUsed;
-    return this.#bodyUsed;
+    return this.#bodyUsed || Readable.isDisturbed(this);
   }
 
   #consume() {
-    if (this.#bodyUsed) throw new TypeError("unusable");
+    if (this.#bodyUsed || Readable.isDisturbed(this)) throw new TypeError("unusable");
     this.#bodyUsed = true;
   }
 
@@ -388,7 +387,12 @@ function fetchDispatch(origin, opts, handler, pending) {
     const base = origin instanceof URL ? origin : new URL(String(origin));
     const url = new URL(base.origin + path);
     const { query } = opts;
-    if (query) url.search = new URLSearchParams(query).toString();
+    if (query) {
+      if (path.includes("?") || path.includes("#")) {
+        throw new InvalidArgumentError('Query params cannot be passed when url already contains "?" or "#".');
+      }
+      url.search = new URLSearchParams(query).toString();
+    }
     const method = opts.method ? String(opts.method).toUpperCase() : "GET";
 
     if (isControllerStyle) handler.onRequestStart?.(controller, { __proto__: null });
@@ -481,11 +485,11 @@ class DispatchBodyReadable extends Readable {
   #used = false;
 
   get bodyUsed() {
-    return this.#used;
+    return this.#used || Readable.isDisturbed(this);
   }
 
   async #consume() {
-    if (this.#used) throw new TypeError("unusable");
+    if (this.#used || Readable.isDisturbed(this)) throw new TypeError("unusable");
     this.#used = true;
     const chunks = [];
     for await (const chunk of this) chunks.push(chunk);
@@ -1031,87 +1035,97 @@ function fetchViaDispatcher(dispatcher, input, init) {
       else if (typeof signal.removeListener === "function") signal.removeListener("abort", onSignalAbort);
       onSignalAbort = null;
     };
-    dispatcher.dispatch(
-      {
-        origin: url.origin,
-        path: url.pathname + url.search,
-        method,
-        headers,
-        body,
-        maxRedirections: redirect === "follow" ? 20 : 0,
-      },
-      {
-        onConnect: abort => {
-          abortDispatch = abort;
-          // Wired here because DispatchOptions has no signal field; user dispatch() implementations never see it.
-          if (signal) {
-            onSignalAbort = () => abort(signal.reason);
-            if (signal.aborted) onSignalAbort();
-            else if (typeof signal.addEventListener === "function")
-              signal.addEventListener("abort", onSignalAbort, { once: true });
-            else if (typeof signal.on === "function") signal.on("abort", onSignalAbort);
-          }
+    const routeError = err => {
+      removeSignal();
+      if (!resolved) reject(err);
+      else if (streamController) {
+        try {
+          streamController.error(err);
+        } catch {
+          // stream already closed or errored
+        }
+      }
+    };
+    try {
+      dispatcher.dispatch(
+        {
+          origin: url.origin,
+          path: url.pathname + url.search,
+          method,
+          headers,
+          body,
+          maxRedirections: redirect === "follow" ? 20 : 0,
         },
-        onHeaders: (statusCode, rawHeaders, resume, statusText) => {
-          if (statusCode < 200) return true;
-          if (
-            redirect === "error" &&
-            (statusCode === 301 || statusCode === 302 || statusCode === 303 || statusCode === 307 || statusCode === 308)
-          ) {
-            const err = new TypeError(`Redirect response '${statusCode}' received when redirect mode is 'error'`);
-            resolved = true;
-            reject(err);
-            abortDispatch?.(err);
-            return true;
-          }
-          resumeData = resume;
-          const responseHeaders = [];
-          for (let i = 0; i + 1 < rawHeaders.length; i += 2) {
-            responseHeaders.push([String(rawHeaders[i]), String(rawHeaders[i + 1])]);
-          }
-          let responseBody = null;
-          const nullBody = statusCode === 101 || statusCode === 204 || statusCode === 205 || statusCode === 304;
-          if (!nullBody && method !== "HEAD") {
-            responseBody = new ReadableStream({
-              start(controller) {
-                streamController = controller;
-              },
-              pull() {
-                resumeData();
-              },
-              cancel(reason) {
-                abortDispatch?.(reason instanceof Error ? reason : undefined);
-              },
-            });
-          }
-          // Construct before flipping resolved so a non-constructible status rejects the fetch promise.
-          const response = new Response(responseBody, { status: statusCode, statusText, headers: responseHeaders });
-          resolved = true;
-          resolve(response);
-          return true;
-        },
-        onData: chunk => {
-          if (!streamController) return true;
-          streamController.enqueue(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
-          return streamController.desiredSize > 0;
-        },
-        onComplete: () => {
-          removeSignal();
-          streamController?.close();
-        },
-        onError: err => {
-          removeSignal();
-          if (!resolved) reject(err);
-          else if (streamController) {
-            try {
-              streamController.error(err);
-            } catch {
-              // stream already closed or errored
+        {
+          onConnect: abort => {
+            abortDispatch = abort;
+            // Wired here because DispatchOptions has no signal field; user dispatch() implementations never see it.
+            if (signal) {
+              onSignalAbort = () => abort(signal.reason);
+              if (signal.aborted) onSignalAbort();
+              else if (typeof signal.addEventListener === "function")
+                signal.addEventListener("abort", onSignalAbort, { once: true });
+              else if (typeof signal.on === "function") signal.on("abort", onSignalAbort);
             }
-          }
+          },
+          onHeaders: (statusCode, rawHeaders, resume, statusText) => {
+            if (statusCode < 200) return true;
+            if (
+              redirect === "error" &&
+              (statusCode === 301 ||
+                statusCode === 302 ||
+                statusCode === 303 ||
+                statusCode === 307 ||
+                statusCode === 308)
+            ) {
+              const err = new TypeError(`Redirect response '${statusCode}' received when redirect mode is 'error'`);
+              resolved = true;
+              reject(err);
+              abortDispatch?.(err);
+              return true;
+            }
+            resumeData = resume;
+            const responseHeaders = [];
+            for (let i = 0; i + 1 < rawHeaders.length; i += 2) {
+              responseHeaders.push([String(rawHeaders[i]), String(rawHeaders[i + 1])]);
+            }
+            let responseBody = null;
+            const nullBody = statusCode === 101 || statusCode === 204 || statusCode === 205 || statusCode === 304;
+            if (!nullBody && method !== "HEAD") {
+              responseBody = new ReadableStream({
+                start(controller) {
+                  streamController = controller;
+                },
+                pull() {
+                  resumeData();
+                },
+                cancel(reason) {
+                  abortDispatch?.(reason instanceof Error ? reason : undefined);
+                },
+              });
+            }
+            // Construct before flipping resolved so a non-constructible status rejects the fetch promise.
+            const response = new Response(responseBody, { status: statusCode, statusText, headers: responseHeaders });
+            resolved = true;
+            resolve(response);
+            return true;
+          },
+          onData: chunk => {
+            if (!streamController) return true;
+            streamController.enqueue(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+            return streamController.desiredSize > 0;
+          },
+          onComplete: () => {
+            removeSignal();
+            streamController?.close();
+          },
+          onError: routeError,
         },
-      },
-    );
+      );
+    } catch (err) {
+      // A dispatcher that throws synchronously after resolving must error the body, not vanish into the executor.
+      routeError(err);
+    }
   });
 }
 
