@@ -9,7 +9,6 @@ import {
   errors,
   getGlobalDispatcher,
   request,
-  setGlobalDispatcher,
   fetch as undiciFetch,
 } from "undici";
 
