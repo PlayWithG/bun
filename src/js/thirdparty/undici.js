@@ -644,6 +644,15 @@ class Dispatcher extends EventEmitter {
         onComplete: rawTrailers => {
           completed = true;
           removeSignal();
+          if (body === null) {
+            callback(
+              new TypeError("request completed without a response: onHeaders must be called before onComplete"),
+              {
+                opaque,
+              },
+            );
+            return;
+          }
           if (rawTrailers && rawTrailers.length) Object.assign(trailers, headersFromRawHeaders(rawTrailers));
           body.push(null);
         },
@@ -1143,7 +1152,7 @@ function fetchViaDispatcher(dispatcher, input, init) {
               responseHeaders.push([String(rawHeaders[i]), String(rawHeaders[i + 1])]);
             }
             let responseBody = null;
-            const nullBody = statusCode === 101 || statusCode === 204 || statusCode === 205 || statusCode === 304;
+            const nullBody = statusCode === 204 || statusCode === 205 || statusCode === 304;
             if (!nullBody && method !== "HEAD") {
               responseBody = new ReadableStream({
                 start(controller) {

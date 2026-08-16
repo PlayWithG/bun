@@ -710,6 +710,19 @@ describe("undici", () => {
       expect(data.opaque).toEqual({ reqId: 42 });
     });
 
+    it("request() rejects when the dispatcher completes without a response", async () => {
+      class CompletesEarly extends Dispatcher {
+        dispatch(_opts: any, handler: any) {
+          handler.onConnect(() => {});
+          handler.onComplete([]);
+          return true;
+        }
+      }
+      await expect(new CompletesEarly().request({ path: "/", method: "GET" })).rejects.toThrow(
+        "onHeaders must be called before onComplete",
+      );
+    });
+
     it("fetch rejects when the dispatcher completes without a response", async () => {
       const dispatcher = {
         dispatch(_opts: any, handler: any) {
