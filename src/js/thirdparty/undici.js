@@ -354,7 +354,8 @@ function fetchDispatch(origin, opts, handler) {
 
   (async () => {
     const url = new URL(opts.path || "/", origin);
-    if (opts.query) url.search = new URLSearchParams(opts.query).toString();
+    const { query } = opts;
+    if (query) url.search = new URLSearchParams(query).toString();
     const method = opts.method ? String(opts.method).toUpperCase() : "GET";
     const body = await bodyFromDispatchOpts(opts.body);
 
@@ -397,8 +398,9 @@ function fetchDispatch(origin, opts, handler) {
       if (handler.onHeaders(resp.status, rawHeaders, resume, resp.statusText) === false) paused = true;
     }
 
-    if (resp.body) {
-      for await (const chunk of resp.body) {
+    const respBody = resp.body;
+    if (respBody) {
+      for await (const chunk of respBody) {
         if (aborted) throw abortReason;
         while (paused) {
           await new Promise(r => {
