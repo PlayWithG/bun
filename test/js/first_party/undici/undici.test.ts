@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { Readable } from "node:stream";
-import { Agent, Client, Pool, RetryAgent, errors, getGlobalDispatcher, request } from "undici";
+import { Agent, Client, Pool, RetryAgent, errors, fetch as undiciFetch, getGlobalDispatcher, request } from "undici";
 
 import { createServer } from "../../../http-test-server";
 
@@ -469,6 +469,47 @@ describe("undici", () => {
       });
       expect(err.code).toBe("UND_ERR_ABORTED");
       await pool.destroy();
+    });
+
+    it("fetch routes through init.dispatcher like miniflare", async () => {
+      await using target = Bun.serve({
+        port: 0,
+        fetch: req => new Response("routed:" + new URL(req.url).pathname),
+      });
+      const pool = new Pool(`http://localhost:${target.port}`);
+      let dispatched = 0;
+      // miniflare's pattern: a custom dispatcher that rewrites every request
+      // into its own Pool, ignoring the URL's authority.
+      const dispatcher = {
+        dispatch(opts: any, handler: any) {
+          dispatched++;
+          return pool.dispatch(opts, handler);
+        },
+      };
+      // Nothing listens on the URL's port; only dispatcher routing can answer.
+      const res = await undiciFetch("http://localhost:1/test?q=1", { dispatcher } as any);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("routed:/test");
+      expect(dispatched).toBe(1);
+      await pool.close();
+    });
+
+    it("fetch with init.dispatcher sends the request body", async () => {
+      await using target = Bun.serve({
+        port: 0,
+        fetch: async req => new Response("echo:" + (await req.text())),
+      });
+      const pool = new Pool(`http://localhost:${target.port}`);
+      const dispatcher = {
+        dispatch: (opts: any, handler: any) => pool.dispatch(opts, handler),
+      };
+      const res = await undiciFetch("http://localhost:1/", {
+        method: "POST",
+        body: "hello",
+        dispatcher,
+      } as any);
+      expect(await res.text()).toBe("echo:hello");
+      await pool.close();
     });
 
     it("RetryAgent.close() closes the wrapped dispatcher", async () => {

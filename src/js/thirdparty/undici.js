@@ -9,7 +9,7 @@ const kEmptyObject = Object.freeze(ObjectCreate(null));
 // Captured at module load so tampering with globalThis later cannot break dispatch.
 const { AbortController, ArrayBuffer, Blob, ReadableStream } = globalThis;
 
-var fetch = Bun.fetch;
+const nativeFetch = Bun.fetch;
 const bindings = $cpp("Undici.cpp", "createUndiciInternalBinding");
 const Response = bindings[0];
 const Request = bindings[1];
@@ -217,7 +217,7 @@ async function request(
   const followRedirects = maxRedirections != null && maxRedirections > 0;
 
   /** @type {Response} */
-  const resp = await fetch(url, {
+  const resp = await nativeFetch(url, {
     signal,
     mode: "cors",
     method,
@@ -390,7 +390,7 @@ function fetchDispatch(origin, opts, handler, pending) {
 
     const maxRedirections = opts.maxRedirections;
     const followRedirects = typeof maxRedirections === "number" && maxRedirections > 0;
-    const resp = await fetch(url, {
+    const resp = await nativeFetch(url, {
       method,
       headers: headersFromDispatchOpts(opts.headers),
       body,
@@ -948,6 +948,103 @@ function buildConnector(_options = {}) {
     notImplemented();
   };
 }
+
+// undici's fetch accepts a { dispatcher } option and routes the request
+// through dispatcher.dispatch(); miniflare relies on this to reach workerd.
+function fetchViaDispatcher(dispatcher, input, init) {
+  let url, method, headers, body, signal;
+  if (input instanceof Request) {
+    url = new URL(input.url);
+    method = init.method ?? input.method;
+    headers = init.headers ?? input.headers;
+    body = init.body ?? input.body;
+    signal = init.signal ?? input.signal;
+  } else {
+    url = input instanceof URL ? input : new URL(String(input));
+    method = init.method ?? "GET";
+    headers = init.headers;
+    body = init.body;
+    signal = init.signal;
+  }
+  if (headers instanceof Headers) headers = headers.toJSON();
+  method = method ? String(method).toUpperCase() : "GET";
+  const redirect = init.redirect ?? "follow";
+
+  return new Promise((resolve, reject) => {
+    let resolved = false;
+    let streamController = null;
+    let resumeData = null;
+    let abortDispatch = null;
+    dispatcher.dispatch(
+      {
+        origin: url.origin,
+        path: url.pathname + url.search,
+        method,
+        headers,
+        body,
+        signal,
+        maxRedirections: redirect === "follow" ? 20 : 0,
+      },
+      {
+        onConnect: abort => {
+          abortDispatch = abort;
+        },
+        onHeaders: (statusCode, rawHeaders, resume, statusText) => {
+          resumeData = resume;
+          const responseHeaders = [];
+          for (let i = 0; i + 1 < rawHeaders.length; i += 2) {
+            responseHeaders.push([String(rawHeaders[i]), String(rawHeaders[i + 1])]);
+          }
+          let responseBody = null;
+          const nullBody = statusCode === 101 || statusCode === 204 || statusCode === 205 || statusCode === 304;
+          if (!nullBody && method !== "HEAD") {
+            responseBody = new ReadableStream({
+              start(controller) {
+                streamController = controller;
+              },
+              pull() {
+                resumeData();
+              },
+              cancel(reason) {
+                abortDispatch?.(reason instanceof Error ? reason : undefined);
+              },
+            });
+          }
+          resolved = true;
+          resolve(new Response(responseBody, { status: statusCode, statusText, headers: responseHeaders }));
+          return true;
+        },
+        onData: chunk => {
+          streamController.enqueue(new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength));
+          return streamController.desiredSize > 0;
+        },
+        onComplete: () => {
+          streamController?.close();
+        },
+        onError: err => {
+          if (!resolved) reject(err);
+          else if (streamController) {
+            try {
+              streamController.error(err);
+            } catch {
+              // stream already closed or errored
+            }
+          }
+        },
+      },
+    );
+  });
+}
+
+function fetch(input, init) {
+  const dispatcher = init?.dispatcher;
+  if (dispatcher && typeof dispatcher.dispatch === "function") {
+    return fetchViaDispatcher(dispatcher, input, init);
+  }
+  return nativeFetch(input, init);
+}
+const { preconnect } = nativeFetch;
+if (preconnect) fetch.preconnect = preconnect;
 
 // Update the exports to match the exact structure
 const moduleExports = {
