@@ -130,7 +130,10 @@ pub use bun_jsc::webcore_types::{Blob, BlobContentType, ClosingState, MAX_SIZE, 
 /// 3: Added File name serialization for File objects (when is_jsdom_file is true)
 /// 4: Added the blob's `size` to file-backed stores so a sliced Bun.file()
 ///    keeps its window's end across structuredClone/postMessage
-const SERIALIZATION_VERSION: u8 = 4;
+/// 5: No layout change. `is_jsdom_file` is now set for Bun.file(), so a 0 byte
+///    on a file-backed store means "plain Blob" (slice(), body.blob()); older
+///    payloads wrote 0 for Bun.file() itself and are promoted on read.
+const SERIALIZATION_VERSION: u8 = 5;
 
 pub use bun_jsc::generated::JSBlob as js;
 
@@ -4224,8 +4227,8 @@ fn on_structured_clone_deserialize<B: AsRef<[u8]>>(
         blob.content_type_was_set.set(content_type_was_set);
     }
 
-    // Version 1 payloads predate the serialized is_jsdom_file byte.
-    if version < 2 && blob.needs_to_read_file() {
+    // Before v5 a file-backed store was always a Bun.file(); see SERIALIZATION_VERSION.
+    if version < 5 && blob.needs_to_read_file() {
         blob.is_jsdom_file.set(true);
     }
 
