@@ -1024,6 +1024,13 @@ function fetchViaDispatcher(dispatcher, input, init) {
     let streamController = null;
     let resumeData = null;
     let abortDispatch = null;
+    let onSignalAbort = null;
+    const removeSignal = () => {
+      if (!onSignalAbort) return;
+      if (typeof signal.removeEventListener === "function") signal.removeEventListener("abort", onSignalAbort);
+      else if (typeof signal.removeListener === "function") signal.removeListener("abort", onSignalAbort);
+      onSignalAbort = null;
+    };
     dispatcher.dispatch(
       {
         origin: url.origin,
@@ -1031,12 +1038,19 @@ function fetchViaDispatcher(dispatcher, input, init) {
         method,
         headers,
         body,
-        signal,
         maxRedirections: redirect === "follow" ? 20 : 0,
       },
       {
         onConnect: abort => {
           abortDispatch = abort;
+          // Wired here because DispatchOptions has no signal field; user dispatch() implementations never see it.
+          if (signal) {
+            onSignalAbort = () => abort(signal.reason);
+            if (signal.aborted) onSignalAbort();
+            else if (typeof signal.addEventListener === "function")
+              signal.addEventListener("abort", onSignalAbort, { once: true });
+            else if (typeof signal.on === "function") signal.on("abort", onSignalAbort);
+          }
         },
         onHeaders: (statusCode, rawHeaders, resume, statusText) => {
           if (statusCode < 200) return true;
@@ -1071,9 +1085,11 @@ function fetchViaDispatcher(dispatcher, input, init) {
           return streamController.desiredSize > 0;
         },
         onComplete: () => {
+          removeSignal();
           streamController?.close();
         },
         onError: err => {
+          removeSignal();
           if (!resolved) reject(err);
           else if (streamController) {
             try {

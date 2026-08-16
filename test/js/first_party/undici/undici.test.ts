@@ -619,6 +619,20 @@ describe("undici", () => {
       expect(infos).toEqual([100]);
     });
 
+    it("fetch({ dispatcher, signal }) aborts through the handler", async () => {
+      const dispatcher = {
+        dispatch(_opts: any, handler: any) {
+          // A compliant dispatch() never reads opts.signal; it only hands out abort.
+          handler.onConnect((reason?: Error) => handler.onError(reason ?? new Error("aborted")));
+          return true;
+        },
+      };
+      const ac = new AbortController();
+      const pending = undiciFetch("http://localhost:1/", { dispatcher, signal: ac.signal } as any);
+      ac.abort();
+      await expect(pending).rejects.toHaveProperty("name", "AbortError");
+    });
+
     it("fetch with dispatcher rejects on a non-constructible status instead of hanging", async () => {
       const dispatcher = {
         dispatch(_opts: any, handler: any) {
