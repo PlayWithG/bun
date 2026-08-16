@@ -714,6 +714,8 @@ describe("undici", () => {
       class CompletesEarly extends Dispatcher {
         dispatch(_opts: any, handler: any) {
           handler.onConnect(() => {});
+          // A stray chunk before onHeaders is dropped rather than crashing the handler.
+          handler.onData(Buffer.from("stray"));
           handler.onComplete([]);
           return true;
         }

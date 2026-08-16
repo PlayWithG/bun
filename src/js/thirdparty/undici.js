@@ -640,8 +640,8 @@ class Dispatcher extends EventEmitter {
           });
           return true;
         },
-        // Copy: the dispatch contract only guarantees the chunk during the callback.
-        onData: chunk => body.push(Buffer.from(chunk)),
+        // Copy (the dispatch contract only guarantees the chunk during the callback); drop chunks sent before onHeaders.
+        onData: chunk => (body === null ? true : body.push(Buffer.from(chunk))),
         onComplete: rawTrailers => {
           completed = true;
           removeSignal();
