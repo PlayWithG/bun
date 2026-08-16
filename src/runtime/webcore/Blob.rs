@@ -130,8 +130,7 @@ pub use bun_jsc::webcore_types::{Blob, BlobContentType, ClosingState, MAX_SIZE, 
 /// 3: Added File name serialization for File objects (when is_jsdom_file is true)
 /// 4: Added the blob's `size` to file-backed stores so a sliced Bun.file()
 ///    keeps its window's end across structuredClone/postMessage
-/// 5: Same layout; Bun.file() now writes is_jsdom_file=1, so on older payloads
-///    a file-backed store with 0 is promoted to a File when read.
+/// 5: Bun.file() now writes is_jsdom_file=1; older file-backed payloads are promoted on read.
 const SERIALIZATION_VERSION: u8 = 5;
 
 pub use bun_jsc::generated::JSBlob as js;
