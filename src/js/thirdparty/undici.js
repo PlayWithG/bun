@@ -266,21 +266,21 @@ function mockErrors() {}
 function appendHeader(headers, name, value) {
   if (value === undefined || value === null) return;
   name = String(name);
-  if (Array.isArray(value)) {
+  if ($isJSArray(value)) {
     for (const v of value) appendHeader(headers, name, v);
     return;
   }
   const existing = headers[name];
   if (existing === undefined) headers[name] = String(value);
-  else if (Array.isArray(existing)) existing.push(String(value));
+  else if ($isJSArray(existing)) existing.push(String(value));
   else headers[name] = [existing, String(value)];
 }
 
 function headersFromDispatchOpts(headers) {
   if (headers == null) return kEmptyObject;
-  if (Array.isArray(headers)) {
+  if ($isJSArray(headers)) {
     const out = {};
-    if (headers.length > 0 && Array.isArray(headers[0])) {
+    if (headers.length > 0 && $isJSArray(headers[0])) {
       for (const [name, value] of headers) appendHeader(out, name, value);
     } else {
       for (let i = 0; i + 1 < headers.length; i += 2) appendHeader(out, headers[i], headers[i + 1]);
@@ -306,10 +306,8 @@ async function bodyFromDispatchOpts(body) {
   return body;
 }
 
-// Performs one request over fetch() and drives the undici handler callbacks.
-// Supports both the legacy handler interface (onConnect/onHeaders/onData/
-// onComplete/onError) and the undici v7 controller interface (onRequestStart/
-// onResponseStart/onResponseData/onResponseEnd/onResponseError).
+// One request over fetch(), driving either the legacy undici handler
+// callbacks (onHeaders/onData/...) or the v7 controller ones (onResponseStart/...).
 function fetchDispatch(origin, opts, handler) {
   const isControllerStyle =
     typeof handler.onRequestStart === "function" || typeof handler.onResponseStart === "function";
@@ -317,13 +315,6 @@ function fetchDispatch(origin, opts, handler) {
   const ac = new AbortController();
   let aborted = false;
   let abortReason;
-  const abort = reason => {
-    if (aborted) return;
-    aborted = true;
-    abortReason = reason ?? new RequestAbortedError("Request aborted");
-    ac.abort(abortReason);
-  };
-
   let paused = false;
   let resumeResolve = null;
   const resume = () => {
@@ -333,6 +324,15 @@ function fetchDispatch(origin, opts, handler) {
       resumeResolve = null;
       r();
     }
+  };
+
+  const abort = reason => {
+    if (aborted) return;
+    aborted = true;
+    abortReason = reason ?? new RequestAbortedError("Request aborted");
+    ac.abort(abortReason);
+    // Wake the body loop if it is parked in a pause, so it observes the abort.
+    resume();
   };
 
   const controller = {
@@ -375,8 +375,7 @@ function fetchDispatch(origin, opts, handler) {
       keepalive: !opts.reset,
     });
 
-    // fetch() decompresses the body, so the encoding headers no longer
-    // describe the bytes the handler will see.
+    // fetch() already decompressed the body, so drop the encoding headers.
     const responseHeaders = resp.headers.toJSON();
     if (method !== "HEAD") {
       delete responseHeaders["content-encoding"];
@@ -389,7 +388,7 @@ function fetchDispatch(origin, opts, handler) {
       const rawHeaders = [];
       for (const name in responseHeaders) {
         const value = responseHeaders[name];
-        if (Array.isArray(value)) {
+        if ($isJSArray(value)) {
           for (const v of value) rawHeaders.push(Buffer.from(name), Buffer.from(v));
         } else {
           rawHeaders.push(Buffer.from(name), Buffer.from(value));
@@ -407,6 +406,7 @@ function fetchDispatch(origin, opts, handler) {
             resumeResolve = r;
           });
         }
+        if (aborted) throw abortReason;
         const buf = Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength);
         const ret = isControllerStyle ? handler.onResponseData?.(controller, buf) : handler.onData?.(buf);
         if (ret === false) paused = true;
@@ -491,8 +491,7 @@ class Dispatcher extends EventEmitter {
         },
       });
     } catch (err) {
-      // dispatch() routes errors through onError when present, so this only
-      // fires for dispatchers that throw synchronously (e.g. the base class).
+      // Only reached when dispatch() itself throws without consulting onError.
       if (body) body.destroy(err);
       else callback(err, null);
     }
@@ -599,7 +598,7 @@ class BalancedPool extends DispatcherBase {
 
   constructor(upstreams = [], _options) {
     super();
-    this.#upstreams = (Array.isArray(upstreams) ? upstreams : [upstreams]).map(upstream =>
+    this.#upstreams = ($isJSArray(upstreams) ? upstreams : [upstreams]).map(upstream =>
       upstream instanceof URL ? upstream : new URL(String(upstream)),
     );
   }

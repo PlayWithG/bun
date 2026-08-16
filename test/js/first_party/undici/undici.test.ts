@@ -282,6 +282,48 @@ describe("undici", () => {
       expect(pool.closed).toBe(true);
     });
 
+    it("abort() while the body is paused delivers onError instead of hanging", async () => {
+      let pulls = 0;
+      await using server = Bun.serve({
+        port: 0,
+        fetch() {
+          const stream = new ReadableStream({
+            pull(controller) {
+              pulls++;
+              controller.enqueue(new Uint8Array(1024));
+            },
+          });
+          return new Response(stream, { headers: { "content-type": "application/octet-stream" } });
+        },
+      });
+      const pool = new Pool(`http://localhost:${server.port}`);
+      let abortFn: ((reason?: Error) => void) | undefined;
+      const err = await new Promise<any>((resolve, reject) => {
+        pool.dispatch(
+          { path: "/", method: "GET" },
+          {
+            onConnect: (abort: (reason?: Error) => void) => {
+              abortFn = abort;
+            },
+            onHeaders: () => true,
+            // Pause after the first chunk so the body loop parks.
+            onData: () => false,
+            onComplete: () => reject(new Error("should not complete")),
+            onError: resolve,
+          },
+        );
+        (async () => {
+          // Wait until more chunks are in flight, so the paused loop is parked
+          // holding an undelivered chunk, then abort.
+          const deadline = Date.now() + 5_000;
+          while (pulls < 3 && Date.now() < deadline) await Bun.sleep(5);
+          abortFn!();
+        })();
+      });
+      expect(err.code).toBe("UND_ERR_ABORTED");
+      await pool.destroy();
+    });
+
     it("aborting from onConnect rejects with UND_ERR_ABORTED", async () => {
       const pool = new Pool(hostUrl);
       const err = await new Promise<any>((resolve, reject) => {
