@@ -311,6 +311,9 @@ function headersFromDispatchOpts(headers) {
     } else {
       for (let i = 0; i + 1 < headers.length; i += 2) push(headers[i], headers[i + 1]);
     }
+  } else if (typeof headers[Symbol.iterator] === "function") {
+    // Headers, Map, or any entries iterable; Object.keys() sees no own properties on these.
+    for (const [name, value] of headers) push(name, value);
   } else {
     for (const name of Object.keys(headers)) push(name, headers[name]);
   }

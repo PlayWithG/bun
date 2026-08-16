@@ -1224,6 +1224,22 @@ describe("undici", () => {
       expect(dataReturns).toEqual([true, true]);
     });
 
+    it("dispatch sends headers given as Headers or Map instances", async () => {
+      const received: (string | null)[] = [];
+      await using server = Bun.serve({
+        port: 0,
+        fetch(req) {
+          received.push(req.headers.get("authorization"));
+          return new Response("ok");
+        },
+      });
+      const pool = new Pool(`http://localhost:${server.port}`);
+      await dispatchLegacy(pool, { path: "/", method: "GET", headers: new Headers({ authorization: "Bearer a" }) });
+      await dispatchLegacy(pool, { path: "/", method: "GET", headers: new Map([["authorization", "Bearer b"]]) });
+      expect(received).toEqual(["Bearer a", "Bearer b"]);
+      await pool.close();
+    });
+
     it("dispatch sends array-valued request headers as separate lines", async () => {
       const seen = Promise.withResolvers<string | null>();
       await using server = Bun.serve({
