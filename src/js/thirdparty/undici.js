@@ -400,6 +400,7 @@ function fetchDispatch(origin, opts, handler, pending) {
 
     const maxRedirections = opts.maxRedirections;
     const followRedirects = typeof maxRedirections === "number" && maxRedirections > 0;
+    // Transport gap: fetch() rejects GET/HEAD bodies that undici's own client would send; the loud error beats dropping the body.
     const resp = await nativeFetch(url, {
       method,
       headers: headersFromDispatchOpts(opts.headers),
@@ -1094,13 +1095,7 @@ function fetchViaDispatcher(dispatcher, input, init) {
     const routeError = err => {
       removeSignal();
       if (!resolved) reject(err);
-      else if (streamController) {
-        try {
-          streamController.error(err);
-        } catch {
-          // stream already closed or errored
-        }
-      }
+      else if (streamController) streamController.error(err);
     };
     try {
       dispatcher.dispatch(
@@ -1137,8 +1132,8 @@ function fetchViaDispatcher(dispatcher, input, init) {
                 statusCode === 308)
             ) {
               const err = new TypeError(`Redirect response '${statusCode}' received when redirect mode is 'error'`);
+              routeError(err);
               resolved = true;
-              reject(err);
               abortDispatch?.(err);
               return true;
             }
@@ -1158,6 +1153,7 @@ function fetchViaDispatcher(dispatcher, input, init) {
                   resumeData();
                 },
                 cancel(reason) {
+                  streamController = null;
                   abortDispatch?.(reason instanceof Error ? reason : undefined);
                 },
               });
