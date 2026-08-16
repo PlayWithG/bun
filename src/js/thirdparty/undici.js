@@ -363,16 +363,6 @@ function fetchDispatch(origin, opts, handler, pending) {
     },
   };
 
-  const signal = opts.signal;
-  let onSignalAbort = null;
-  if (signal) {
-    onSignalAbort = () => abort(signal.reason);
-    if (signal.aborted) onSignalAbort();
-    else if (typeof signal.addEventListener === "function")
-      signal.addEventListener("abort", onSignalAbort, { once: true });
-    else if (typeof signal.on === "function") signal.on("abort", onSignalAbort);
-  }
-
   // Tracked for close() drain and destroy() abort; done exists before handler callbacks run so a sync close() from onConnect still waits.
   let resolveDone;
   const entry = { abort, done: new Promise(r => (resolveDone = r)) };
@@ -393,7 +383,8 @@ function fetchDispatch(origin, opts, handler, pending) {
       }
       url.search = new URLSearchParams(query).toString();
     }
-    const method = opts.method ? String(opts.method).toUpperCase() : "GET";
+    // The dispatch layer preserves method case, like undici.
+    const method = opts.method ? String(opts.method) : "GET";
 
     if (isControllerStyle) handler.onRequestStart?.(controller, { __proto__: null });
     else handler.onConnect?.(abort);
@@ -472,9 +463,6 @@ function fetchDispatch(origin, opts, handler, pending) {
     .finally(() => {
       pending?.delete(entry);
       resolveDone();
-      if (!onSignalAbort) return;
-      if (typeof signal.removeEventListener === "function") signal.removeEventListener("abort", onSignalAbort);
-      else if (typeof signal.removeListener === "function") signal.removeListener("abort", onSignalAbort);
     });
 
   return true;
@@ -562,10 +550,13 @@ class Dispatcher extends EventEmitter {
         reqBody.destroy(err);
       }
     };
+    const trailers = ObjectCreate(null);
+    let context = null;
     try {
       this.dispatch(opts, {
-        onConnect: abort => {
+        onConnect: (abort, ctx) => {
           abortBody = abort;
+          context = ctx ?? null;
           // Wired here because DispatchOptions has no signal field; user dispatch() implementations never see it.
           if (signal) {
             onSignalAbort = () => abort(signal.reason);
@@ -597,16 +588,17 @@ class Dispatcher extends EventEmitter {
             statusCode,
             headers: headersFromRawHeaders(rawHeaders),
             body,
-            trailers: { __proto__: null },
+            trailers,
             opaque: opts.opaque ?? null,
-            context: { __proto__: null },
+            context,
           });
           return true;
         },
         onData: chunk => body.push(chunk),
-        onComplete: () => {
+        onComplete: rawTrailers => {
           completed = true;
           removeSignal();
+          if (rawTrailers && rawTrailers.length) Object.assign(trailers, headersFromRawHeaders(rawTrailers));
           body.push(null);
         },
         onError: err => {
@@ -618,11 +610,10 @@ class Dispatcher extends EventEmitter {
         },
       });
     } catch (err) {
-      // Only reached when dispatch() itself throws without consulting onError.
       removeSignal();
       destroyRequestBody(err);
       if (body) body.destroy(err);
-      else callback(err, null);
+      else if (!completed) callback(err, null);
     }
   }
 }
@@ -1005,23 +996,36 @@ function buildConnector(_options = {}) {
 
 // fetch with { dispatcher } routes through dispatcher.dispatch(); miniflare relies on this to reach workerd.
 function fetchViaDispatcher(dispatcher, input, init) {
-  let url, method, headers, body, signal;
+  let url, method, headers, body, signal, redirect;
   if (input instanceof Request) {
     url = new URL(input.url);
     method = init.method ?? input.method;
     headers = init.headers ?? input.headers;
     body = init.body ?? input.body;
     signal = init.signal ?? input.signal;
+    redirect = init.redirect ?? input.redirect ?? "follow";
   } else {
     url = input instanceof URL ? input : new URL(String(input));
     method = init.method ?? "GET";
     headers = init.headers;
     body = init.body;
     signal = init.signal;
+    redirect = init.redirect ?? "follow";
   }
   if (headers instanceof Headers) headers = headers.toJSON();
-  method = method ? String(method).toUpperCase() : "GET";
-  const redirect = init.redirect ?? "follow";
+  method = method ? String(method) : "GET";
+  // WHATWG fetch normalizes only these six methods; others keep their case.
+  const upper = method.toUpperCase();
+  if (
+    upper === "DELETE" ||
+    upper === "GET" ||
+    upper === "HEAD" ||
+    upper === "OPTIONS" ||
+    upper === "POST" ||
+    upper === "PUT"
+  ) {
+    method = upper;
+  }
 
   return new Promise((resolve, reject) => {
     let resolved = false;

@@ -584,6 +584,79 @@ describe("undici", () => {
       await expect(pending).rejects.toHaveProperty("name", "AbortError");
     });
 
+    it("request() exposes trailers and context from the dispatcher", async () => {
+      class WithTrailers extends Dispatcher {
+        dispatch(_opts: any, handler: any) {
+          handler.onConnect(() => {}, { some: "context" });
+          handler.onHeaders(200, [], () => {}, "OK");
+          handler.onData(Buffer.from("hi"));
+          handler.onComplete([Buffer.from("x-foo"), Buffer.from("bar")]);
+          return true;
+        }
+      }
+      const { trailers, context, body } = await new WithTrailers().request({ path: "/", method: "GET" });
+      expect(await body.text()).toBe("hi");
+      expect(context).toEqual({ some: "context" });
+      expect(trailers).toEqual({ "x-foo": "bar" });
+    });
+
+    it("request(cb) does not invoke a throwing callback twice", async () => {
+      const pool = new Pool(hostUrl);
+      await pool.close();
+      let calls = 0;
+      expect(() =>
+        pool.request({ path: "/", method: "GET" }, () => {
+          calls++;
+          throw new Error("user callback threw");
+        }),
+      ).not.toThrow();
+      expect(calls).toBe(1);
+    });
+
+    it("request({ signal }) registers a single abort listener", async () => {
+      const pool = new Pool(hostUrl);
+      let adds = 0;
+      const signal = {
+        aborted: false,
+        on: () => {
+          adds++;
+        },
+        removeListener: () => {},
+      };
+      const { body } = await pool.request({ path: "/get", method: "GET", signal: signal as any });
+      await body.text();
+      expect(adds).toBe(1);
+      await pool.close();
+    });
+
+    it("fetch with dispatcher normalizes only the WHATWG methods", async () => {
+      const seen: string[] = [];
+      const dispatcher = {
+        dispatch(opts: any, handler: any) {
+          seen.push(opts.method);
+          handler.onConnect(() => {});
+          handler.onHeaders(200, [], () => {}, "OK");
+          handler.onComplete([]);
+          return true;
+        },
+      };
+      await undiciFetch("http://localhost:1/", { method: "get", dispatcher } as any);
+      await undiciFetch("http://localhost:1/", { method: "patch", dispatcher } as any);
+      expect(seen).toEqual(["GET", "patch"]);
+    });
+
+    it("fetch honors redirect 'error' set on a Request input", async () => {
+      await using target = Bun.serve({
+        port: 0,
+        fetch: () => new Response(null, { status: 302, headers: { location: "/next" } }),
+      });
+      const pool = new Pool(`http://localhost:${target.port}`);
+      const dispatcher = { dispatch: (opts: any, handler: any) => pool.dispatch(opts, handler) };
+      const req = new Request("http://localhost:1/", { redirect: "error" });
+      await expect(undiciFetch(req, { dispatcher } as any)).rejects.toBeInstanceOf(TypeError);
+      await pool.destroy();
+    });
+
     it("RetryAgent.close() closes the wrapped dispatcher", async () => {
       const agent = new Agent();
       const retry = new RetryAgent(agent);
