@@ -374,8 +374,7 @@ function fetchDispatch(origin, opts, handler, pending) {
     else if (typeof signal.on === "function") signal.on("abort", onSignalAbort);
   }
 
-  // Tracked so the dispatcher can drain in-flight requests on close() and abort them on destroy().
-  // done exists before any handler callback runs, so close() from onConnect still waits for this request.
+  // Tracked for close() drain and destroy() abort; done exists before handler callbacks run so a sync close() from onConnect still waits.
   let resolveDone;
   const entry = { abort, done: new Promise(r => (resolveDone = r)) };
   pending?.add(entry);
@@ -656,8 +655,11 @@ class DispatcherBase extends Dispatcher {
       return;
     }
     this.#closed = true;
-    // Drain: resolve only after in-flight requests settle, like undici.
-    Promise.allSettled(Array.from(this[kPending], entry => entry.done)).then(() => callback(null, null));
+    // Drain, then transition to destroyed, like undici's close().then(() => destroy()).
+    Promise.allSettled(Array.from(this[kPending], entry => entry.done)).then(() => {
+      this.#destroyed = true;
+      callback(null, null);
+    });
   }
 
   destroy(err, callback) {

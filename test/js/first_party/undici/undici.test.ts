@@ -316,15 +316,16 @@ describe("undici", () => {
       await client.close();
     });
 
-    it("close() resolves and later dispatches fail with ClientClosedError", async () => {
+    it("a completed close() transitions to destroyed, like undici", async () => {
       const pool = new Pool(hostUrl);
       await pool.close();
       expect(pool.closed).toBe(true);
+      expect(pool.destroyed).toBe(true);
       await expect(dispatchLegacy(pool, { path: "/get", method: "GET" })).rejects.toHaveProperty(
         "code",
-        "UND_ERR_CLOSED",
+        "UND_ERR_DESTROYED",
       );
-      await expect(pool.request({ path: "/get", method: "GET" })).rejects.toBeInstanceOf(errors.ClientClosedError);
+      await expect(pool.request({ path: "/get", method: "GET" })).rejects.toBeInstanceOf(errors.ClientDestroyedError);
     });
 
     it("destroy() resolves and later requests fail with ClientDestroyedError", async () => {
@@ -544,7 +545,7 @@ describe("undici", () => {
       await pool.close();
       const reqBody = Readable.from(["x"]);
       await expect(pool.request({ path: "/post", method: "POST", body: reqBody })).rejects.toBeInstanceOf(
-        errors.ClientClosedError,
+        errors.ClientDestroyedError,
       );
       expect(reqBody.destroyed).toBe(true);
     });
