@@ -79,6 +79,15 @@ enum CronJobState {
     Bootstrapping,
 }
 
+/// Where the job's current child process is, as seen by `check_finished`.
+/// The status is acted on exactly once: a `check_finished` that runs after
+/// that (an output reader finishing late) sees `Consumed` and stays pending.
+enum ExitState {
+    Running,
+    Exited(Status),
+    Consumed,
+}
+
 /// Fields shared by [`CronRegisterJob`] and [`CronRemoveJob`].
 struct CronJobCommon {
     promise: jsc::JSPromiseStrong,
@@ -94,8 +103,7 @@ struct CronJobCommon {
     #[cfg(windows)]
     stderr_reader: OutputReader,
     remaining_fds: i8,
-    has_called_process_exit: bool,
-    exit_status: Option<Status>,
+    exit: ExitState,
     err_msg: Option<Vec<u8>>,
     tmp_path: Option<ZString>,
     /// Typed enum for the io-layer FilePoll vtable (`bun_io::EventLoopHandle`
@@ -117,8 +125,7 @@ impl CronJobCommon {
             #[cfg(windows)]
             stderr_reader: OutputReader::init::<T>(),
             remaining_fds: 0,
-            has_called_process_exit: false,
-            exit_status: None,
+            exit: ExitState::Running,
             err_msg: None,
             tmp_path: None,
             // SAFETY: `vm_mut().event_loop()` returns the live per-thread `jsc::EventLoop`.
@@ -294,14 +301,14 @@ trait CronJobBase: Sized + BufferedReaderParent {
 
     fn check_finished(&mut self) -> JobAction {
         let b = self.base_mut();
-        if !b.has_called_process_exit || b.remaining_fds != 0 {
+        if matches!(b.exit, ExitState::Running) || b.remaining_fds != 0 {
             return JobAction::Pending;
         }
         b.detach_process();
         if b.err_msg.is_some() {
             return JobAction::Finish;
         }
-        let Some(status) = b.exit_status.take() else {
+        let ExitState::Exited(status) = core::mem::replace(&mut b.exit, ExitState::Consumed) else {
             return JobAction::Pending;
         };
         match status {
@@ -422,9 +429,7 @@ trait CronJobBase: Sized + BufferedReaderParent {
         // SAFETY: temporary exclusive borrow; ends with this block, before
         // `maybe_finished` may free `this`.
         unsafe {
-            let b = (*this).base_mut();
-            b.has_called_process_exit = true;
-            b.exit_status = Some(status);
+            (*this).base_mut().exit = ExitState::Exited(status);
         }
         // SAFETY: no borrows of `this` remain; `this` is the live heap job.
         unsafe { Self::maybe_finished(this) };
@@ -1984,7 +1989,7 @@ unsafe fn spawn_cmd_generic<T: CronJobBase>(
     };
     // SAFETY: `process` was just allocated by `to_process`; we hold the only
     // ref. `this` is the owning `Box<T>` (only freed in `T::finish`, gated on
-    // `has_called_process_exit`), so it outlives `process`.
+    // the process having exited via `exit`), so it outlives `process`.
     unsafe { (*process).set_exit_handler(bun_spawn::ProcessExit::new(T::EXIT_KIND, this)) };
     // SAFETY: `process` is live; `watch_or_reap` may synchronously invoke the
     // exit handler (which re-enters `this` via the vtable thunk).
@@ -2029,8 +2034,7 @@ unsafe fn spawn_cmd_prepare<T: CronJobBase>(
             unsafe { (*s).base_mut() }
         }};
     }
-    base!().has_called_process_exit = false;
-    base!().exit_status = None;
+    base!().exit = ExitState::Running;
     base!().remaining_fds = 0;
 
     #[cfg(not(windows))]
