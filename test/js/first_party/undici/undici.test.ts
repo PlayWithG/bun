@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { Readable } from "node:stream";
 import { Agent, Client, Pool, errors, getGlobalDispatcher, request } from "undici";
 
 import { createServer } from "../../../http-test-server";
@@ -321,6 +322,70 @@ describe("undici", () => {
       await pool.destroy();
       expect(pool.destroyed).toBe(true);
       await expect(pool.request({ path: "/get", method: "GET" })).rejects.toHaveProperty("code", "UND_ERR_DESTROYED");
+    });
+
+    it("dispatch without an error callback throws synchronously", () => {
+      const pool = new Pool(hostUrl);
+      expect(() =>
+        pool.dispatch({ path: "/get", method: "GET" }, {
+          onHeaders: () => true,
+          onData: () => {},
+          onComplete: () => {},
+        } as any),
+      ).toThrow(errors.InvalidArgumentError);
+    });
+
+    it("dispatch keeps '//' paths on the configured origin", async () => {
+      const pool = new Pool(hostUrl);
+      const res = await dispatchLegacy(pool, { path: "//evil.example/x", method: "GET" });
+      expect(res.statusCode).toBe(404);
+      expect(JSON.parse(res.body).url).toStartWith(hostUrl);
+      await pool.close();
+    });
+
+    it("dispatch rejects paths that do not start with '/'", async () => {
+      const pool = new Pool(hostUrl);
+      await expect(dispatchLegacy(pool, { path: "http://evil.example/x", method: "GET" })).rejects.toHaveProperty(
+        "code",
+        "UND_ERR_INVALID_ARG",
+      );
+      await pool.close();
+    });
+
+    it("streams a node Readable request body", async () => {
+      const client = new Client(hostUrl);
+      const { statusCode, body } = await client.request({
+        path: "/post",
+        method: "POST",
+        body: Readable.from(["pi", "ng"]),
+      });
+      expect(statusCode).toBe(201);
+      expect(((await body.json()) as { data: string }).data).toBe("ping");
+      await client.close();
+    });
+
+    it("body.destroy() cancels the underlying request", async () => {
+      const cancelled = Promise.withResolvers<void>();
+      await using server = Bun.serve({
+        port: 0,
+        fetch() {
+          const stream = new ReadableStream({
+            pull(controller) {
+              controller.enqueue(new Uint8Array(1024));
+            },
+            cancel() {
+              cancelled.resolve();
+            },
+          });
+          return new Response(stream, { headers: { "content-type": "application/octet-stream" } });
+        },
+      });
+      const pool = new Pool(`http://localhost:${server.port}`);
+      const { body } = await pool.request({ path: "/", method: "GET" });
+      // Read one chunk, then bail out; breaking destroys the body stream.
+      for await (const chunk of body) break;
+      await cancelled.promise;
+      await pool.destroy();
     });
 
     it("close(callback) invokes the callback", async () => {

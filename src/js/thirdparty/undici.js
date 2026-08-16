@@ -292,18 +292,21 @@ function headersFromDispatchOpts(headers) {
   return headers;
 }
 
-async function bodyFromDispatchOpts(body) {
+async function* iterableToByteChunks(iterable) {
+  for await (const chunk of iterable) {
+    yield typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+  }
+}
+
+function bodyFromDispatchOpts(body) {
   if (body == null) return null;
   if (typeof body === "string") return body;
   if (body instanceof ArrayBuffer || ArrayBuffer.isView(body)) return body;
   if (body instanceof Blob || body instanceof ReadableStream) return body;
   if (body instanceof FormData || body instanceof URLSearchParams) return body;
+  // Stream Readables and (async) iterables instead of buffering them.
   if (typeof body[Symbol.asyncIterator] === "function" || typeof body[Symbol.iterator] === "function") {
-    const chunks = [];
-    for await (const chunk of body) {
-      chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
-    }
-    return Buffer.concat(chunks);
+    return Readable.toWeb(Readable.from(iterableToByteChunks(body)));
   }
   return body;
 }
@@ -364,15 +367,23 @@ function fetchDispatch(origin, opts, handler) {
   }
 
   (async () => {
-    const url = new URL(opts.path || "/", origin);
+    const path = opts.path || "/";
+    if (typeof path !== "string" || path.charCodeAt(0) !== 0x2f /* '/' */) {
+      throw new InvalidArgumentError("path must start with '/'");
+    }
+    // Concatenate instead of resolving against the origin, so a path like
+    // '//other.host/x' cannot change the authority the request goes to.
+    const base = origin instanceof URL ? origin : new URL(String(origin));
+    const url = new URL(base.origin + path);
     const { query } = opts;
     if (query) url.search = new URLSearchParams(query).toString();
     const method = opts.method ? String(opts.method).toUpperCase() : "GET";
-    const body = await bodyFromDispatchOpts(opts.body);
 
     if (isControllerStyle) handler.onRequestStart?.(controller, { __proto__: null });
     else handler.onConnect?.(abort);
     if (aborted) throw abortReason;
+
+    const body = bodyFromDispatchOpts(opts.body);
 
     const maxRedirections = opts.maxRedirections;
     const followRedirects = typeof maxRedirections === "number" && maxRedirections > 0;
@@ -514,14 +525,24 @@ class Dispatcher extends EventEmitter {
 
     let body = null;
     let resumeBody = null;
+    let abortBody = null;
+    let completed = false;
     try {
       this.dispatch(opts, {
-        onConnect: () => {},
+        onConnect: abort => {
+          abortBody = abort;
+        },
         onHeaders: (statusCode, rawHeaders, resume, _statusText) => {
           resumeBody = resume;
           body = new DispatchBodyReadable({
             read() {
               resumeBody();
+            },
+            destroy(err, cb) {
+              // body.destroy() before the response ended cancels the request,
+              // so the dispatch loop is not left parked forever.
+              if (!completed) abortBody?.(err ?? undefined);
+              cb(err);
             },
           });
           const headers = ObjectCreate(null);
@@ -540,9 +561,11 @@ class Dispatcher extends EventEmitter {
         },
         onData: chunk => body.push(chunk),
         onComplete: () => {
+          completed = true;
           body.push(null);
         },
         onError: err => {
+          completed = true;
           if (body) body.destroy(err);
           else callback(err, null);
         },
@@ -602,6 +625,10 @@ class DispatcherBase extends Dispatcher {
 
   dispatch(opts, handler) {
     if (!handler || typeof handler !== "object") throw new InvalidArgumentError("handler must be an object");
+    if (typeof handler.onError !== "function" && typeof handler.onResponseError !== "function") {
+      // Matches undici: without an error callback, async failures would be unobservable.
+      throw new InvalidArgumentError("invalid onError method");
+    }
     try {
       if (!opts || typeof opts !== "object") throw new InvalidArgumentError("opts must be an object.");
       if (this.#destroyed) throw new ClientDestroyedError("The client is destroyed");
