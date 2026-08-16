@@ -949,8 +949,7 @@ function buildConnector(_options = {}) {
   };
 }
 
-// undici's fetch accepts a { dispatcher } option and routes the request
-// through dispatcher.dispatch(); miniflare relies on this to reach workerd.
+// fetch with { dispatcher } routes through dispatcher.dispatch(); miniflare relies on this to reach workerd.
 function fetchViaDispatcher(dispatcher, input, init) {
   let url, method, headers, body, signal;
   if (input instanceof Request) {
