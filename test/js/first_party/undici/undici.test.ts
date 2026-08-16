@@ -806,6 +806,60 @@ describe("undici", () => {
       expect(await res.text()).toBe("hi");
     });
 
+    it("fetch with redirect 'error' ignores a late redirect onHeaders", async () => {
+      const dispatcher = {
+        dispatch(_opts: any, handler: any) {
+          handler.onConnect(() => {});
+          handler.onHeaders(200, [], () => {}, "OK");
+          // A contract-violating second onHeaders must not error the delivered 200 body.
+          handler.onHeaders(302, [], () => {}, "Found");
+          handler.onData(Buffer.from("hi"));
+          handler.onComplete([]);
+          return true;
+        },
+      };
+      const res = await undiciFetch("http://localhost:1/", { dispatcher, redirect: "error" } as any);
+      expect(res.status).toBe(200);
+      expect(await res.text()).toBe("hi");
+    });
+
+    it("fetch ignores dispatcher callbacks after onComplete", async () => {
+      const dispatcher = {
+        dispatch(_opts: any, handler: any) {
+          handler.onConnect(() => {});
+          handler.onHeaders(200, [], () => {}, "OK");
+          handler.onData(Buffer.from("hi"));
+          handler.onComplete([]);
+          // Late callbacks must be no-ops, not TypeErrors thrown back into the dispatcher.
+          handler.onData(Buffer.from("late"));
+          handler.onComplete([]);
+          return true;
+        },
+      };
+      const res = await undiciFetch("http://localhost:1/", { dispatcher } as any);
+      expect(await res.text()).toBe("hi");
+    });
+
+    it("request() ignores onHeaders after onError", async () => {
+      const boom = new Error("boom");
+      class ErrorsFirst extends Dispatcher {
+        dispatch(_opts: any, handler: any) {
+          handler.onConnect(() => {});
+          handler.onError(boom);
+          handler.onHeaders(200, [], () => {}, "OK");
+          return true;
+        }
+      }
+      const calls: any[] = [];
+      await new Promise<void>(resolve => {
+        new ErrorsFirst().request({ path: "/", method: "GET" }, (err: any) => {
+          calls.push(err);
+          resolve();
+        });
+      });
+      expect(calls).toEqual([boom]);
+    });
+
     it("fetch with dispatcher rejects invalid URLs instead of throwing", async () => {
       const dispatcher = { dispatch: () => true };
       await expect(undiciFetch("not a url", { dispatcher } as any)).rejects.toBeInstanceOf(TypeError);

@@ -622,8 +622,8 @@ class Dispatcher extends EventEmitter {
               opts.onInfo({ statusCode, headers: headersFromRawHeaders(rawHeaders) });
             return true;
           }
-          // A second final onHeaders violates the dispatch contract; keep the first body.
-          if (body !== null) return true;
+          // onHeaders after a terminal callback or a second final onHeaders violates the contract; ignore it.
+          if (completed || body !== null) return true;
           resumeBody = resume;
           const headers = headersFromRawHeaders(rawHeaders);
           body = new DispatchBodyReadable(
@@ -1110,8 +1110,13 @@ function fetchViaDispatcher(dispatcher, input, init) {
     };
     const routeError = err => {
       removeSignal();
-      if (!resolved) reject(err);
-      else if (streamController) streamController.error(err);
+      if (!resolved) {
+        resolved = true;
+        reject(err);
+      } else if (streamController) {
+        streamController.error(err);
+        streamController = null;
+      }
     };
     try {
       dispatcher.dispatch(
@@ -1139,6 +1144,8 @@ function fetchViaDispatcher(dispatcher, input, init) {
           },
           onHeaders: (statusCode, rawHeaders, resume, statusText) => {
             if (statusCode < 200) return true;
+            // onHeaders after the promise settled violates the dispatch contract; keep the first outcome.
+            if (resolved) return true;
             if (
               redirect === "error" &&
               (statusCode === 301 ||
@@ -1149,12 +1156,9 @@ function fetchViaDispatcher(dispatcher, input, init) {
             ) {
               const err = new TypeError(`Redirect response '${statusCode}' received when redirect mode is 'error'`);
               routeError(err);
-              resolved = true;
               abortDispatch?.(err);
               return true;
             }
-            // A second final onHeaders violates the dispatch contract; keep the first response.
-            if (resolved) return true;
             resumeData = resume;
             const responseHeaders = [];
             for (let i = 0; i + 1 < rawHeaders.length; i += 2) {
@@ -1201,6 +1205,8 @@ function fetchViaDispatcher(dispatcher, input, init) {
               return;
             }
             streamController?.close();
+            // Null so post-onComplete onData/onComplete become no-ops instead of throwing on a closed controller.
+            streamController = null;
           },
           onError: routeError,
         },
