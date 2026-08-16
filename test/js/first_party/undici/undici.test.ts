@@ -203,6 +203,33 @@ describe("undici", () => {
       expect(typeof pool.request).toBe("function");
     });
 
+    // Resolving null is what upstream undici's close()/destroy() resolve to.
+    it("Agent.close() resolves null", async () => {
+      const agent = new Agent();
+      expect(typeof agent.close).toBe("function");
+      expect(await agent.close()).toBe(null);
+    });
+
+    it("Agent.destroy() resolves null", async () => {
+      const agent = new Agent();
+      expect(typeof agent.destroy).toBe("function");
+      expect(await agent.destroy()).toBe(null);
+    });
+
+    it("Pool.close() and destroy() resolve null", async () => {
+      const pool = new Pool(hostUrl);
+      expect(await pool.close()).toBe(null);
+      expect(await pool.destroy()).toBe(null);
+    });
+
+    it("Client.close() and destroy() resolve null", async () => {
+      const client = new Client(hostUrl);
+      expect(typeof client.close).toBe("function");
+      expect(typeof client.destroy).toBe("function");
+      expect(await client.close()).toBe(null);
+      expect(await client.destroy()).toBe(null);
+    });
+
     it("Pool.dispatch performs a request with the legacy handler interface", async () => {
       const pool = new Pool(hostUrl);
       const res = await dispatchLegacy(pool, { path: "/get", method: "GET" });
