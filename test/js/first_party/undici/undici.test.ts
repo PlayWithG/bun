@@ -808,9 +808,8 @@ describe.concurrent("undici.EventSource", () => {
   });
 
   it("a refused connection reports an error without keeping the process alive for the reconnect", async () => {
-    const closed = Bun.serve({ port: 0, fetch: () => new Response() });
-    const url = `http://127.0.0.1:${closed.port}/`;
-    closed.stop(true);
+    // Nothing listens on port 1 (tcpmux); the same address the shape test above uses.
+    const url = "http://127.0.0.1:1/";
 
     await using proc = Bun.spawn({
       cmd: [
