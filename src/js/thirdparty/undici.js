@@ -609,7 +609,7 @@ class EventSource extends EventTarget {
       try {
         this.#feed(result.value);
       } catch (error) {
-        // Typically a line too long to fit in a string. Without this the stream would stay OPEN with nobody reading it.
+        // Typically a line too long to fit in a string; reported as an ErrorEvent rather than leaving the stream OPEN unread.
         if (this.#controller === controller) this.#fail(error);
         return;
       }
@@ -715,7 +715,6 @@ class EventSource extends EventTarget {
   }
 
   // https://html.spec.whatwg.org/multipage/server-sent-events.html#fail-the-connection
-  // An exception caught in #readBody rides along as an ErrorEvent, the way Bun's WebSocket reports errors.
   #fail(error) {
     this.#readyState = kClosed;
     this.#abort();
