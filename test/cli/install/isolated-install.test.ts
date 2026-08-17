@@ -4423,6 +4423,9 @@ describe("bun link integration", () => {
 
     const bodyDir = join(packageDir, "node_modules", ".bun", "no-deps@1.0.0", "node_modules", "no-deps");
     const installedFiles = new Set(await listFilesRecursive(bodyDir));
+    // Installer bookkeeping, not package content; `bun pm pack` never
+    // emits it, so keep it out of the parity comparison.
+    installedFiles.delete(".bun-link");
 
     // Capability assertion: installed contents === publishable contents.
     // Sort for a readable diff on failure.
@@ -4518,6 +4521,8 @@ describe("bun link integration", () => {
 
     const bodyDir = join(packageDir, "node_modules", ".bun", "no-deps@1.0.0", "node_modules", "no-deps");
     const installedFiles = new Set(await listFilesRecursive(bodyDir));
+    // Installer bookkeeping, not package content (see the parity test above).
+    installedFiles.delete(".bun-link");
 
     expect([...installedFiles].sort()).toEqual([...publishedFiles].sort());
   });
