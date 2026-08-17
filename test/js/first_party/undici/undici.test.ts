@@ -233,7 +233,6 @@ describe.concurrent("undici.EventSource", () => {
   }
 
   const isError = (event: Event) => event.type === "error";
-  const isMessage = (data: string) => (event: Event) => event instanceof MessageEvent && event.data === data;
   function nthError(n: number) {
     let errors = 0;
     return (event: Event) => isError(event) && ++errors === n;
@@ -296,8 +295,9 @@ describe.concurrent("undici.EventSource", () => {
     const es = new EventSource(new URL("/stream?x=1", server.url), { withCredentials: true });
     try {
       const { seen, done } = record(es, isError, ["open", "message", "ping", "error"]);
-      const { promise: firstMessage, resolve } = Promise.withResolvers<MessageEvent>();
+      const { promise: firstMessage, resolve, reject } = Promise.withResolvers<MessageEvent>();
       es.onmessage = resolve;
+      es.onerror = reject;
       expect(es.readyState).toBe(EventSource.CONNECTING);
       expect(es.url).toBe(`${server.url.origin}/stream?x=1`);
       expect(es.withCredentials).toBe(true);
@@ -387,12 +387,13 @@ describe.concurrent("undici.EventSource", () => {
     const es = new EventSource(server.url);
     try {
       const data: string[] = [];
-      let notify = () => {};
+      let waiter = Promise.withResolvers<void>();
       es.onmessage = event => {
         data.push(event.data);
-        notify();
+        waiter.resolve();
       };
-      const nextMessage = () => new Promise<void>(resolve => (notify = resolve));
+      es.onerror = () => waiter.reject(new Error(`unexpected error event, readyState ${es.readyState}`));
+      const nextMessage = () => (waiter = Promise.withResolvers<void>()).promise;
 
       // Each chunk below is only sent once the client has dispatched the previous chunk's last event, so every
       // boundary is really observed by the parser.
@@ -504,11 +505,15 @@ describe.concurrent("undici.EventSource", () => {
 
     const es = new EventSource(server.url, { node: { reconnectionTime: 5 } });
     try {
-      const { seen, done } = record(es, isMessage("2"), ["message"]);
+      const { seen, done } = record(es, nthError(2));
       await done;
       expect(seen).toEqual([
+        { type: "open", readyState: 1 },
         { type: "message", readyState: 1, data: "1", lastEventId: "" },
+        { type: "error", readyState: 0 },
+        { type: "open", readyState: 1 },
         { type: "message", readyState: 1, data: "2", lastEventId: "" },
+        { type: "error", readyState: 0 },
       ]);
     } finally {
       es.close();
@@ -551,8 +556,9 @@ describe.concurrent("undici.EventSource", () => {
     const url = `http://localhost:${server.port}/redirect`;
     const es = new EventSource(url);
     try {
-      const { promise, resolve } = Promise.withResolvers<MessageEvent>();
+      const { promise, resolve, reject } = Promise.withResolvers<MessageEvent>();
       es.onmessage = resolve;
+      es.onerror = reject;
       const event = await promise;
       expect({ url: es.url, data: event.data, origin: event.origin }).toEqual({
         url,
@@ -754,7 +760,7 @@ describe.concurrent("undici.EventSource", () => {
   it("fails the connection with an ErrorEvent when the stream cannot be parsed", async () => {
     // Parsing only throws on resource exhaustion (a line too long to hold in a string), which is too expensive to
     // provoke in a test, so the decoder is made to throw instead. The client runs in a subprocess to contain the
-    // patched global; the subprocess has nothing else keeping it alive, so it exits as soon as the connection is gone.
+    // patched prototype; the subprocess has nothing else keeping it alive, so it exits as soon as the connection is gone.
     const streamCancelled = Promise.withResolvers<void>();
     using server = Bun.serve({
       port: 0,
@@ -776,7 +782,7 @@ describe.concurrent("undici.EventSource", () => {
         bunExe(),
         "-e",
         `const { EventSource } = require("undici");
-         globalThis.TextDecoder = class { decode() { throw new RangeError("decoder boom"); } };
+         TextDecoder.prototype.decode = () => { throw new RangeError("decoder boom"); };
          const es = new EventSource(process.env.SSE_URL);
          es.onmessage = () => console.log("unexpected message");
          es.onerror = event => {

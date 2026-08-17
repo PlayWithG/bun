@@ -21,6 +21,7 @@ const WebSocket = bindings[8];
 const CloseEvent = bindings[9];
 const ErrorEvent = bindings[10];
 const MessageEvent = bindings[11];
+const { AbortController, DOMException, Event, TextDecoder, clearTimeout, decodeURIComponent, setTimeout } = globalThis;
 
 class FileReader extends EventTarget {
   constructor() {
