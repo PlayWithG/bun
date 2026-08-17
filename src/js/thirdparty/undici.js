@@ -420,6 +420,7 @@ function utf8ByteString(string) {
 // https://html.spec.whatwg.org/multipage/server-sent-events.html
 class EventSource extends EventTarget {
   #url;
+  // Only reflected: fetch() in Bun has no ambient credentials (cookies) for this to include or omit, same as in undici.
   #withCredentials = false;
   #readyState = kConnecting;
   #lastEventId = "";

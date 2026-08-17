@@ -753,39 +753,42 @@ describe.concurrent("undici.EventSource", () => {
 
   it("fails the connection with an ErrorEvent when the stream cannot be parsed", async () => {
     // Parsing only throws on resource exhaustion (a line too long to hold in a string), which is too expensive to
-    // provoke in a test, so the decoder is made to throw instead. A subprocess keeps the patched global contained.
+    // provoke in a test, so the decoder is made to throw instead. The client runs in a subprocess to contain the
+    // patched global; the subprocess has nothing else keeping it alive, so it exits as soon as the connection is gone.
+    const streamCancelled = Promise.withResolvers<void>();
+    using server = Bun.serve({
+      port: 0,
+      fetch: () =>
+        sse(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(Buffer.from("data: x\n\n"));
+            },
+            cancel() {
+              streamCancelled.resolve();
+            },
+          }),
+        ),
+    });
+
     await using proc = Bun.spawn({
       cmd: [
         bunExe(),
         "-e",
         `const { EventSource } = require("undici");
-         const cancelled = Promise.withResolvers();
-         const server = Bun.serve({
-           port: 0,
-           fetch: () =>
-             new Response(
-               new ReadableStream({
-                 start(controller) { controller.enqueue(new TextEncoder().encode("data: x\\n\\n")); },
-                 cancel() { cancelled.resolve(); },
-               }),
-               { headers: { "content-type": "text/event-stream" } },
-             ),
-         });
          globalThis.TextDecoder = class { decode() { throw new RangeError("decoder boom"); } };
-         const es = new EventSource(server.url);
+         const es = new EventSource(process.env.SSE_URL);
          es.onmessage = () => console.log("unexpected message");
-         es.onerror = async event => {
-           await cancelled.promise;
+         es.onerror = event => {
            console.log(JSON.stringify({
              event: event.constructor.name,
              message: event.message,
              error: event.error instanceof RangeError,
              readyState: es.readyState,
            }));
-           server.stop(true);
          };`,
       ],
-      env: bunEnv,
+      env: { ...bunEnv, SSE_URL: server.url.href },
       stdout: "pipe",
       stderr: "pipe",
     });
@@ -795,6 +798,7 @@ describe.concurrent("undici.EventSource", () => {
     );
     expect(stderr).toBe("");
     expect(exitCode).toBe(0);
+    await streamCancelled.promise;
   });
 
   it("a refused connection reports an error without keeping the process alive for the reconnect", async () => {
