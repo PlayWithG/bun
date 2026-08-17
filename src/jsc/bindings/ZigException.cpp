@@ -313,6 +313,10 @@ public:
             if (line.startsWith("async "_s)) {
                 frame.isAsync = true;
                 line = line.substring(6);
+                if (line.isEmpty()) {
+                    offset = stack.length();
+                    return false;
+                }
             }
         }
 

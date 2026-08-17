@@ -402,14 +402,18 @@ const agg = new AggregateError([m1, m2], ["agg", "msg"].join("-"), { cause });
     expect(exitCode).toBe(0);
   });
 
-  test.concurrent("reassigned Error.stack (V8 format) is honored by console.error", async () => {
-    // After `.stack` materializes, overwrite it with another V8-format stack
-    // string that mixes paren-ful, paren-less and `at async /path:l:c` frames.
-    // A frame with an unbalanced parenthesis is malformed: parsing stops there.
+  // After `.stack` materializes, overwrite it with another V8-format stack
+  // string that mixes paren-ful, paren-less and `at async /path:l:c` frames,
+  // followed by a malformed frame, at which parsing stops, and a well-formed
+  // one that must therefore not be printed.
+  test.concurrent.each([
+    ["an unbalanced parenthesis", "at broken (/fake-four.js:77:88"],
+    ["nothing after async", "at async "],
+  ])("reassigned Error.stack (V8 format) is honored up to a frame with %s", async (_, malformed) => {
     const { stderr, exitCode } = await run(
       `const e = new Error("X"); void e.stack;` +
         `e.stack = "Error: X\\n    at fn (/fake-one.js:11:22)\\n    at /fake-two.js:33:44\\n    at async /fake-three.mjs:55:66` +
-        `\\n    at broken (/fake-four.js:77:88\\n    at fine (/fake-five.js:99:11)";` +
+        `\\n    ${malformed}\\n    at fine (/fake-five.js:99:11)";` +
         `console.error(e);`,
     );
     expect(stderr).toContain("at fn (/fake-one.js:11:22)");
