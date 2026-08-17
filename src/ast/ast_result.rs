@@ -82,6 +82,12 @@ pub struct Ast<'a> {
     // const_values: ConstValuesMap,
     pub ts_enums: TsEnumsMap,
 
+    /// `--mangle-props`: property name → this file's `MangledProp` symbol for it.
+    pub mangled_props: MangledPropsMap,
+    /// `--mangle-props`: property names this file uses without mangling them.
+    /// Mangled names must never collide with these.
+    pub reserved_props: ReservedPropsSet,
+
     /// Not to be confused with `commonjs_named_exports`
     /// This is a list of named exports that may exist in a CommonJS module
     /// We use this with `commonjs_at_runtime` to re-export CommonJS
@@ -126,6 +132,8 @@ impl<'a> Ast<'a> {
             redirect_import_record_index: None,
             target: Target::Browser,
             ts_enums: Default::default(),
+            mangled_props: Default::default(),
+            reserved_props: Default::default(),
             has_commonjs_export_names: false,
             has_import_meta: false,
             import_meta_ref: Ref::NONE,
@@ -161,6 +169,8 @@ pub type NamedExports = StringArrayHashMap<NamedExport, StringContext, AstAlloc>
 pub type ConstValuesMap = ArrayHashMap<Ref, Expr, AutoContext, AstAlloc>;
 pub type TsEnumsMap =
     ArrayHashMap<Ref, StringHashMap<InlinedEnumValue, AstAlloc>, AutoContext, AstAlloc>;
+pub type MangledPropsMap = StringArrayHashMap<Ref, StringContext, AstAlloc>;
+pub type ReservedPropsSet = StringArrayHashMap<(), StringContext, AstAlloc>;
 
 impl<'a> Ast<'a> {
     pub fn from_parts(parts: Box<[Part]>, arena: &'a bun_alloc::MimallocArena) -> Ast<'a> {

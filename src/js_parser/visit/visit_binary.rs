@@ -99,6 +99,12 @@ pub struct BinaryExpressionVisitor {
 
     /// Input for visiting the left child
     pub(crate) left_in: ExprIn,
+
+    /// `ExprIn::should_mangle_strings_as_props` of the binary expression
+    /// itself. The value of `(a, "x")` is its right operand, so the flag is
+    /// passed on to it. Only the outermost expression of a left-associative
+    /// chain receives it: in `((a, "x"), b)` the inner string is not the value.
+    pub(crate) should_mangle_strings_as_props: bool,
 }
 
 impl BinaryExpressionVisitor {
@@ -165,6 +171,15 @@ impl BinaryExpressionVisitor {
                 } else {
                     p.visit_expr(&mut e_.right);
                 }
+            }
+            Op::Code::BinComma => {
+                p.visit_expr_in_out(
+                    &mut e_.right,
+                    ExprIn {
+                        should_mangle_strings_as_props: v.should_mangle_strings_as_props,
+                        ..ExprIn::default()
+                    },
+                );
             }
             _ => {
                 p.visit_expr(&mut e_.right);
@@ -751,6 +766,8 @@ impl BinaryExpressionVisitor {
 
         v.left_in = ExprIn {
             assign_target: Op::Code::binary_assign_target(e_.op),
+            // `"name" in obj` names a property.
+            should_mangle_strings_as_props: e_.op == Op::Code::BinIn,
             ..ExprIn::default()
         };
 

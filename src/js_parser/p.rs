@@ -563,6 +563,13 @@ pub struct P<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> {
 
     pub(crate) const_values: bun_ast::ast_result::ConstValuesMap,
 
+    /// `--mangle-props` bookkeeping, moved into the `Ast` by `to_ast`. See
+    /// `mangle_props.rs`.
+    pub(crate) mangled_props: bun_ast::MangledPropsMap,
+    pub(crate) reserved_props: bun_ast::ReservedPropsSet,
+    /// Names the `--mangle-props` patterns rejected (a cache; parser-local).
+    pub(crate) unmangled_props: HashMap<&'a [u8], ()>,
+
     // These are backed by stack fallback allocators in _parse, and are uninitialized until then.
     pub(crate) binary_expression_stack: ListManaged<'a, BinaryExpressionVisitor>,
     // Reusable stack for `SideEffects::simplify_unused_binary_comma_expr`;
@@ -1345,7 +1352,14 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
         }
         visit(self.symbols.as_slice(), &mut freq, self.module_scope());
 
-        // TODO: mangledProps
+        // Subtract out all mangled property names, since they are going to be renamed too.
+        for ref_ in self.mangled_props.values() {
+            let symbol: &Symbol = &self.symbols[ref_.inner_index() as usize];
+            freq.scan(
+                symbol.original_name.slice(),
+                -(i32::try_from(symbol.use_count_estimate).expect("int cast")),
+            );
+        }
 
         Some(freq)
     }
@@ -1490,6 +1504,9 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
         match &key.data {
             js_ast::ExprData::EString(s) => s.string(self.arena).expect("unreachable"),
             js_ast::ExprData::EPrivateIdentifier(private) => self.load_name_from_ref(private.ref_),
+            js_ast::ExprData::ENameOfSymbol(name) => self.symbols[name.ref_.inner_index() as usize]
+                .original_name
+                .slice(),
             _ => b"property",
         }
     }
@@ -1568,15 +1585,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                             }
                             js_ast::ts::Data::Namespace(map) => {
                                 let target = self.new_expr(E::Identifier::init(ns_ref), loc);
-                                let expr = self.new_expr(
-                                    E::Dot {
-                                        target,
-                                        name: alias.into(),
-                                        name_loc: loc,
-                                        ..Default::default()
-                                    },
-                                    loc,
-                                );
+                                let expr = self.dot_or_mangled_prop(target, alias, loc, loc);
                                 self.ts_namespace = RecentlyVisitedTSNamespace {
                                     expr: expr.data,
                                     map: Some(map),
@@ -1651,15 +1660,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
 
                 self.record_usage(ns_ref);
                 let target = self.new_expr(E::Identifier::init(ns_ref), loc);
-                let prop = self.new_expr(
-                    E::Dot {
-                        target,
-                        name: name.into(),
-                        name_loc: loc,
-                        ..Default::default()
-                    },
-                    loc,
-                );
+                let prop = self.dot_or_mangled_prop(target, name, loc, loc);
 
                 if matches!(self.ts_namespace.expr, js_ast::ExprData::EIdentifier(e) if e.ref_.eql(ident.ref_))
                 {
@@ -1865,6 +1866,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                     symbol.namespace_alias = Some(bun_alloc::ast_box(js_ast::NamespaceAlias {
                         namespace_ref,
                         alias: js_ast::StoreStr::new(alias_name),
+                        mangled_prop_ref: None,
                         import_record_index: import_record_i,
                         was_originally_property_access: false,
                     }));
@@ -2923,6 +2925,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                     symbol.namespace_alias = Some(bun_alloc::ast_box(js_ast::NamespaceAlias {
                         namespace_ref: self.bun_app_namespace_ref,
                         alias: js_ast::StoreStr::new(b"Response"),
+                        mangled_prop_ref: None,
                         was_originally_property_access: false,
                         import_record_index: u32::MAX,
                     }));
@@ -3806,6 +3809,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                         symbol.namespace_alias = Some(bun_alloc::ast_box(js_ast::NamespaceAlias {
                             namespace_ref: stmt.namespace_ref,
                             alias: js_ast::StoreStr::new(b"default"),
+                            mangled_prop_ref: None,
                             import_record_index: stmt.import_record_index,
                             was_originally_property_access: false,
                         }));
@@ -3887,6 +3891,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                     symbol.namespace_alias = Some(bun_alloc::ast_box(js_ast::NamespaceAlias {
                         namespace_ref: stmt.namespace_ref,
                         alias: js_ast::StoreStr::new(alias),
+                        mangled_prop_ref: None,
                         import_record_index: stmt.import_record_index,
                         was_originally_property_access: false,
                     }));
@@ -4927,18 +4932,35 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                 IdentifierOpts::default(),
             ) {
                 value = rewrote;
-            } else {
-                value = self.new_expr(
-                    E::Dot {
-                        target: value,
-                        name: (*part).into(),
-                        name_loc: loc,
-                        can_be_removed_if_unused: self.options.features.dead_code_elimination,
-                        ..Default::default()
-                    },
-                    loc,
-                );
+                continue;
             }
+
+            // A factory like `Foo.createElement_` reads a property the user's own
+            // code defines, so it is renamed along with the definition.
+            if self.is_mangling_props() {
+                if let Some(index) = self.mangled_prop_expr(part, loc, false) {
+                    value = self.new_expr(
+                        E::Index {
+                            target: value,
+                            index,
+                            optional_chain: None,
+                        },
+                        loc,
+                    );
+                    continue;
+                }
+            }
+
+            value = self.new_expr(
+                E::Dot {
+                    target: value,
+                    name: (*part).into(),
+                    name_loc: loc,
+                    can_be_removed_if_unused: self.options.features.dead_code_elimination,
+                    ..Default::default()
+                },
+                loc,
+            );
         }
 
         value
@@ -6160,19 +6182,17 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
             // If the "||=" operator is supported, our minified output can be slightly smaller
             if is_export {
                 if let Some(namespace) = self.enclosing_namespace_arg_ref {
-                    let name = self.symbols[name_ref.inner_index() as usize].original_name;
+                    let name: &'a [u8] = self.symbols[name_ref.inner_index() as usize]
+                        .original_name
+                        .slice();
 
                     // "name = (enclosing.name ||= {})"
                     self.record_usage(namespace);
                     self.record_usage(name_ref);
-                    let left = self.new_expr(
-                        E::Dot {
-                            target: Expr::init_identifier(namespace, name_loc),
-                            // `Symbol.original_name` is already `StoreStr` (= `E::Str`); plain copy.
-                            name,
-                            name_loc,
-                            ..Default::default()
-                        },
+                    let left = self.dot_or_mangled_prop(
+                        Expr::init_identifier(namespace, name_loc),
+                        name,
+                        name_loc,
                         name_loc,
                     );
                     let right = self.new_expr(E::Object::default(), name_loc);
@@ -7230,24 +7250,11 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
             .expect("infallible: in namespace");
         self.record_usage(enclosing_ref);
 
-        // E::Dot.name is `&'static [u8]` pending crate-wide 'bump
-        // threading. Symbol.original_name is an arena-owned `StoreStr` (lives for
-        // parser 'a, which outlives every Expr). Erase the lifetime to fit the
-        // placeholder field type.
-        // SAFETY: arena-owned slice valid for the AST lifetime.
-        let name: &'static [u8] = self.symbols[r#ref.inner_index() as usize]
+        let name: &'a [u8] = self.symbols[r#ref.inner_index() as usize]
             .original_name
             .slice();
 
-        self.new_expr(
-            E::Dot {
-                target: Expr::init_identifier(enclosing_ref, loc),
-                name: name.into(),
-                name_loc: loc,
-                ..Default::default()
-            },
-            loc,
-        )
+        self.dot_or_mangled_prop(Expr::init_identifier(enclosing_ref, loc), name, loc, loc)
     }
 
     pub(crate) fn wrap_identifier_hoisting(&mut self, loc: bun_ast::Loc, r#ref: Ref) -> Expr {
@@ -8464,6 +8471,8 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
             // TODO: cross-module constant inlining
             // const_values: self.const_values,
             ts_enums,
+            mangled_props: core::mem::take(&mut self.mangled_props),
+            reserved_props: core::mem::take(&mut self.reserved_props),
             import_meta_ref: self.import_meta_ref,
 
             symbols,
@@ -8835,6 +8844,9 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
             relocated_top_level_vars: BumpVec::new_in(arena),
             after_arrow_body_loc: bun_ast::Loc::EMPTY,
             const_values: Default::default(),
+            mangled_props: Default::default(),
+            reserved_props: Default::default(),
+            unmangled_props: Default::default(),
             binary_expression_stack: BumpVec::new_in(arena),
             binary_expression_simplify_stack: BumpVec::new_in(arena),
             ref_to_ts_namespace_member: Default::default(),

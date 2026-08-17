@@ -31,6 +31,11 @@ pub struct NamespaceAlias {
     pub was_originally_property_access: bool,
 
     pub import_record_index: u32,
+
+    /// Set when `alias` names a property renamed by `--mangle-props` (a
+    /// reference to an export of a sibling TypeScript namespace block): the
+    /// printer prints this symbol's mangled name instead of `alias`.
+    pub mangled_prop_ref: Option<Ref>,
 }
 
 impl Default for NamespaceAlias {
@@ -40,6 +45,7 @@ impl Default for NamespaceAlias {
             alias: StoreStr::EMPTY,
             was_originally_property_access: false,
             import_record_index: u32::MAX,
+            mangled_prop_ref: None,
         }
     }
 }

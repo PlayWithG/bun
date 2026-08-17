@@ -2406,6 +2406,76 @@ impl<'a> LinkerContext<'a> {
         }
     }
 
+    /// `--mangle-props`: chooses one name per mangled property for the whole
+    /// bundle. Every file created its own `MangledProp` symbol per property
+    /// name (see `bun_js_parser::mangle_props`); here the symbols for the same
+    /// name are merged, so their use counts add up and every chunk prints the
+    /// same name for the property, and then the names are assigned, most used
+    /// first. A name used by any file without mangling it is never assigned.
+    pub(crate) fn mangle_props(&mut self) -> Result<(), bun_alloc::AllocError> {
+        let all_mangled_props = self.graph.ast.items_mangled_props();
+        if all_mangled_props.iter().all(|props| props.is_empty()) {
+            return Ok(());
+        }
+        let all_reserved_props = self.graph.ast.items_reserved_props();
+        let all_flags = self.graph.ast.items_flags();
+        let all_char_freqs = self.graph.ast.items_char_freq();
+
+        let mut reserved = js_printer::mangle_props::ReservedPropNames::init();
+        // Property name → the symbol every other file's symbol for it is merged into.
+        let mut merged: HashMap<&[u8], Ref> = HashMap::new();
+        let mut char_freq = bun_ast::CharFreq::default();
+
+        for source_index in self.graph.reachable_files.iter() {
+            let source_index = source_index.get() as usize;
+
+            for name in all_reserved_props[source_index].keys() {
+                reserved.reserve(name);
+            }
+
+            let mangled_props = &all_mangled_props[source_index];
+            for (name, &ref_) in mangled_props.keys().iter().zip(mangled_props.values()) {
+                let name: &[u8] = name;
+                match merged.get(name) {
+                    Some(&canonical) => {
+                        self.graph.symbols.merge(ref_, canonical);
+                    }
+                    None => {
+                        merged.insert(name, ref_);
+                    }
+                }
+            }
+
+            if all_flags[source_index].contains(AstFlags::HAS_CHAR_FREQ) {
+                char_freq.include(&all_char_freqs[source_index]);
+            }
+        }
+
+        let mut candidates: Vec<js_printer::renamer::StableSymbolCount> = merged
+            .values()
+            .map(|&ref_| {
+                let use_count = self
+                    .graph
+                    .symbols
+                    .get_const(ref_)
+                    .expect("mangled prop refs come from the symbol table")
+                    .use_count_estimate;
+                js_printer::mangle_props::mangled_prop_candidate(
+                    ref_,
+                    use_count,
+                    self.graph.stable_source_indices[ref_.source_index() as usize],
+                )
+            })
+            .collect();
+
+        js_printer::mangle_props::assign_mangled_prop_names(
+            &mut candidates,
+            &reserved,
+            &char_freq,
+            &mut self.mangled_props,
+        )
+    }
+
     pub(crate) fn append_isolated_hashes_for_imported_chunks(
         &self,
         hash: &mut ContentHasher,

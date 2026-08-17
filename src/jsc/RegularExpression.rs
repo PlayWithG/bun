@@ -39,13 +39,41 @@ unsafe extern "C" {
     safe fn Yarr__RegularExpression__matches(this: &RegularExpression, string: BunString) -> i32;
 }
 
+impl Flags {
+    /// Converts a JavaScript `RegExp.prototype.flags` string into the subset of
+    /// flags `JSC::Yarr::RegularExpression` supports (`i`, `m`, `v`). `u` is
+    /// compiled as `v`; `d`, `g`, `s` and `y` do not change whether a string
+    /// matches, so they are ignored. Unknown letters are an error.
+    pub fn bits_from_js_flags(flags: &[u8]) -> Result<u16, RegularExpressionError> {
+        let mut bits: u16 = 0;
+        for &flag in flags {
+            bits |= match flag {
+                b'i' => Flags::IgnoreCase as u16,
+                b'm' => Flags::Multiline as u16,
+                b'u' | b'v' => Flags::UnicodeSets as u16,
+                b'd' | b'g' | b's' | b'y' => 0,
+                _ => return Err(RegularExpressionError::InvalidRegExp),
+            };
+        }
+        Ok(bits)
+    }
+}
+
 impl RegularExpression {
     #[inline]
     pub fn init(
         pattern: BunString,
         flags: Flags,
     ) -> Result<*mut RegularExpression, RegularExpressionError> {
-        let regex = Yarr__RegularExpression__init(pattern, flags as u16);
+        Self::init_with_flag_bits(pattern, flags as u16)
+    }
+
+    /// `flags` is a combination of [`Flags`] bits (see [`Flags::bits_from_js_flags`]).
+    pub fn init_with_flag_bits(
+        pattern: BunString,
+        flags: u16,
+    ) -> Result<*mut RegularExpression, RegularExpressionError> {
+        let regex = Yarr__RegularExpression__init(pattern, flags);
         // `RegularExpression` is an `opaque_ffi!` ZST handle; `opaque_mut` is
         // the centralised non-null-ZST deref proof (panics on null, which
         // `Yarr__RegularExpression__init` never returns).
@@ -82,29 +110,36 @@ impl RegularExpression {
 }
 
 // ──────────────────────────────────────────────────────────────────────────
-// `bun_install_types::NodeLinker` / `bun_install::PnpmMatcher` extern impls.
+// `bun_install_types::regex::RegularExpression` extern impls (used by
+// `PnpmMatcher` and the bundler's `--mangle-props`).
 //
 // Those lower-tier crates cannot name `jsc::RegularExpression`.
 // The bodies live here as `#[no_mangle]` Rust-ABI
 // fns, declared `extern "Rust"` on the low-tier side; link-time resolved.
 // ──────────────────────────────────────────────────────────────────────────
 
+/// `js_flags` is a JavaScript `RegExp` flags string (see
+/// [`Flags::bits_from_js_flags`]). Returns `None` if the pattern or the flags
+/// are invalid.
 #[unsafe(no_mangle)]
-fn __bun_regex_compile(pattern: BunString) -> Option<core::ptr::NonNull<()>> {
+fn __bun_regex_compile(pattern: &[u8], js_flags: &[u8]) -> Option<core::ptr::NonNull<()>> {
+    let flags = Flags::bits_from_js_flags(js_flags).ok()?;
     // Initialize JSC before first compile (idempotent).
     crate::initialize(false);
-    match RegularExpression::init(pattern, Flags::None) {
+    // Yarr copies what it needs out of the pattern while compiling, so a
+    // borrowed view of the bytes is enough.
+    match RegularExpression::init_with_flag_bits(BunString::from_bytes(pattern), flags) {
         Ok(r) => core::ptr::NonNull::new(r.cast()),
         Err(_) => None,
     }
 }
 
 #[unsafe(no_mangle)]
-fn __bun_regex_matches(regex: core::ptr::NonNull<()>, input: &BunString) -> bool {
+fn __bun_regex_matches(regex: core::ptr::NonNull<()>, input: &[u8]) -> bool {
     // `RegularExpression` is an `opaque_ffi!` ZST handle; `opaque_mut` is the
     // centralised non-null deref proof. `regex` was produced by
     // `__bun_regex_compile` and remains live until `__bun_regex_drop`.
-    RegularExpression::opaque_mut(regex.as_ptr().cast()).matches(*input)
+    RegularExpression::opaque_mut(regex.as_ptr().cast()).matches(BunString::from_bytes(input))
 }
 
 #[unsafe(no_mangle)]

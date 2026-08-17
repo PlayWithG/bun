@@ -13,7 +13,7 @@ extern "C" RegularExpression* Yarr__RegularExpression__init(BunString pattern, u
     // NOLINTBEGIN
     Options::AllowUnfinalizedAccessScope scope {};
     // NOLINTEND
-    return new RegularExpression(pattern.toWTFString(BunString::ZeroCopy), OptionSet<Flags>(static_cast<Flags>(flags)));
+    return new RegularExpression(pattern.toWTFString(BunString::ZeroCopy), OptionSet<Flags>::fromRaw(flags));
 }
 extern "C" void Yarr__RegularExpression__deinit(RegularExpression* re)
 {

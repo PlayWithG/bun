@@ -1016,6 +1016,13 @@ pub struct ExprIn {
     pub(crate) is_immediately_assigned_to_decl: bool,
 
     pub(crate) property_access_for_method_call_maybe_should_replace_with_undefined: bool,
+
+    /// Set when the value of this expression is used as a property name: the
+    /// index of `a[x]`, a computed key `{ [x]: 1 }`, or the left side of `x in a`.
+    /// It follows the result position through `cond ? x : y` and `(a, x)`. With
+    /// `--mangle-quoted`, a string literal here is a candidate for mangling;
+    /// without it, the name is reserved so no mangled name can collide with it.
+    pub(crate) should_mangle_strings_as_props: bool,
 }
 
 /// This function exists to tie all of these checks together in one place
