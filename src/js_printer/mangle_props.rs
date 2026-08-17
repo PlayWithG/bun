@@ -1,11 +1,11 @@
 //! The naming half of `--mangle-props`.
 //!
 //! The parser turned every property name selected for mangling into a
-//! `Kind::MangledProp` symbol (see `bun_js_parser::mangle_props`) and recorded
-//! the names it left alone in `Ast::reserved_props`. This module picks the
-//! replacement names: the most used properties get the shortest names, and a
-//! generated name is never a keyword or a reserved name. The result is a
-//! [`MangledProps`] map, which the printer consults through
+//! `Kind::MangledProp` symbol (see `bun_js_parser::mangle_props`) and left
+//! those symbols, plus the names it did not mangle, in `Ast::property_mangling`.
+//! This module picks the replacement names: the most used properties get the
+//! shortest names, and a generated name is never a keyword or a reserved name.
+//! The result is a [`MangledProps`] map, which the printer consults through
 //! `Printer::mangled_prop_name` whenever it prints an `E::NameOfSymbol`.
 //!
 //! The linker calls this once per build after merging every file's symbol for
@@ -98,11 +98,14 @@ pub fn mangled_props_for_single_file(
     tree: &Ast,
     symbols: &symbol::Map,
 ) -> Result<Option<MangledProps>, bun_alloc::AllocError> {
-    if tree.mangled_props.is_empty() {
+    let Some(file) = tree.property_mangling.as_deref() else {
+        return Ok(None);
+    };
+    if file.mangled_props.is_empty() {
         return Ok(None);
     }
 
-    let mut candidates: Vec<StableSymbolCount> = tree
+    let mut candidates: Vec<StableSymbolCount> = file
         .mangled_props
         .values()
         .iter()
@@ -115,7 +118,7 @@ pub fn mangled_props_for_single_file(
         .collect();
 
     let mut reserved = ReservedPropNames::init();
-    for name in tree.reserved_props.keys() {
+    for name in file.reserved_props.keys() {
         reserved.reserve(name);
     }
 

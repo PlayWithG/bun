@@ -82,11 +82,9 @@ pub struct Ast<'a> {
     // const_values: ConstValuesMap,
     pub ts_enums: TsEnumsMap,
 
-    /// `--mangle-props`: property name → this file's `MangledProp` symbol for it.
-    pub mangled_props: MangledPropsMap,
-    /// `--mangle-props`: property names this file uses without mangling them.
-    /// Mangled names must never collide with these.
-    pub reserved_props: ReservedPropsSet,
+    /// `None` unless the file was parsed with `--mangle-props`. Boxed because
+    /// most builds never use it and `Ast` is copied around by value.
+    pub property_mangling: Option<bun_alloc::AstBox<PropertyMangling>>,
 
     /// Not to be confused with `commonjs_named_exports`
     /// This is a list of named exports that may exist in a CommonJS module
@@ -132,8 +130,7 @@ impl<'a> Ast<'a> {
             redirect_import_record_index: None,
             target: Target::Browser,
             ts_enums: Default::default(),
-            mangled_props: Default::default(),
-            reserved_props: Default::default(),
+            property_mangling: None,
             has_commonjs_export_names: false,
             has_import_meta: false,
             import_meta_ref: Ref::NONE,
@@ -171,6 +168,23 @@ pub type TsEnumsMap =
     ArrayHashMap<Ref, StringHashMap<InlinedEnumValue, AstAlloc>, AutoContext, AstAlloc>;
 pub type MangledPropsMap = StringArrayHashMap<Ref, StringContext, AstAlloc>;
 pub type ReservedPropsSet = StringArrayHashMap<(), StringContext, AstAlloc>;
+
+/// What `--mangle-props` collected while parsing one file. The linker (or the
+/// printer, when not bundling) turns this into the final names.
+#[derive(Default)]
+pub struct PropertyMangling {
+    /// Property name → this file's `MangledProp` symbol for it.
+    pub mangled_props: MangledPropsMap,
+    /// Property names this file uses without mangling them. No mangled
+    /// property may be given one of these names.
+    pub reserved_props: ReservedPropsSet,
+}
+
+impl PropertyMangling {
+    pub fn is_empty(&self) -> bool {
+        self.mangled_props.is_empty() && self.reserved_props.is_empty()
+    }
+}
 
 impl<'a> Ast<'a> {
     pub fn from_parts(parts: Box<[Part]>, arena: &'a bun_alloc::MimallocArena) -> Ast<'a> {

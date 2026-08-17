@@ -2413,11 +2413,13 @@ impl<'a> LinkerContext<'a> {
     /// same name for the property, and then the names are assigned, most used
     /// first. A name used by any file without mangling it is never assigned.
     pub(crate) fn mangle_props(&mut self) -> Result<(), bun_alloc::AllocError> {
-        let all_mangled_props = self.graph.ast.items_mangled_props();
-        if all_mangled_props.iter().all(|props| props.is_empty()) {
+        let all_property_mangling = self.graph.ast.items_property_mangling();
+        if all_property_mangling.iter().all(|file| {
+            file.as_ref()
+                .is_none_or(|file| file.mangled_props.is_empty())
+        }) {
             return Ok(());
         }
-        let all_reserved_props = self.graph.ast.items_reserved_props();
         let all_flags = self.graph.ast.items_flags();
         let all_char_freqs = self.graph.ast.items_char_freq();
 
@@ -2429,12 +2431,24 @@ impl<'a> LinkerContext<'a> {
         for source_index in self.graph.reachable_files.iter() {
             let source_index = source_index.get() as usize;
 
-            for name in all_reserved_props[source_index].keys() {
+            if all_flags[source_index].contains(AstFlags::HAS_CHAR_FREQ) {
+                char_freq.include(&all_char_freqs[source_index]);
+            }
+
+            let Some(file) = all_property_mangling[source_index].as_deref() else {
+                continue;
+            };
+
+            for name in file.reserved_props.keys() {
                 reserved.reserve(name);
             }
 
-            let mangled_props = &all_mangled_props[source_index];
-            for (name, &ref_) in mangled_props.keys().iter().zip(mangled_props.values()) {
+            for (name, &ref_) in file
+                .mangled_props
+                .keys()
+                .iter()
+                .zip(file.mangled_props.values())
+            {
                 let name: &[u8] = name;
                 match merged.get(name) {
                     Some(&canonical) => {
@@ -2444,10 +2458,6 @@ impl<'a> LinkerContext<'a> {
                         merged.insert(name, ref_);
                     }
                 }
-            }
-
-            if all_flags[source_index].contains(AstFlags::HAS_CHAR_FREQ) {
-                char_freq.include(&all_char_freqs[source_index]);
             }
         }
 

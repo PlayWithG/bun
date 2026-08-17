@@ -8388,6 +8388,13 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
 
         let char_freq: Option<js_ast::CharFreq> = self.compute_character_frequency();
 
+        let property_mangling = js_ast::PropertyMangling {
+            mangled_props: core::mem::take(&mut self.mangled_props),
+            reserved_props: core::mem::take(&mut self.reserved_props),
+        };
+        let property_mangling =
+            (!property_mangling.is_empty()).then(|| bun_alloc::ast_box(property_mangling));
+
         let module_scope_strict = self.module_scope().strict_mode;
         // Scope is not `Clone` (Vec/HashMap members), so move it out and leave
         // a default in `*self.module_scope`. `to_ast` is terminal — the parser
@@ -8471,8 +8478,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
             // TODO: cross-module constant inlining
             // const_values: self.const_values,
             ts_enums,
-            mangled_props: core::mem::take(&mut self.mangled_props),
-            reserved_props: core::mem::take(&mut self.reserved_props),
+            property_mangling,
             import_meta_ref: self.import_meta_ref,
 
             symbols,
