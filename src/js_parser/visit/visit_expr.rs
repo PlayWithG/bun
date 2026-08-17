@@ -893,11 +893,8 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
 
         // "a['b']" => "a.b"
         //
-        // Not while mangling properties: a quoted name is only mangled with
-        // --mangle-quoted, which is decided when the index is visited below
-        // (with `should_mangle_strings_as_props`); converting first would make
-        // `e_dot` treat it like an unquoted name. Names that stay strings are
-        // still converted to dot syntax after the visit.
+        // Not while mangling properties, where `e_dot` would then mangle a quoted
+        // name; the index is handled below instead (and still becomes a dot).
         if p.options.features.minify_syntax && !p.is_mangling_props() {
             if let Some(mut s) = e_.index.data.e_string() {
                 if !s.is_utf16 && s.is_identifier(p.arena) {
@@ -1019,8 +1016,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                 let unwrapped = e_.index.unwrap_inlined();
                 if let Some(mut s) = unwrapped.data.e_string() {
                     if p.is_mangling_props() {
-                        // Inlined constants and enum members arrive here without
-                        // passing through `e_string`; they stay as written.
+                        // Inlined constants and enum members never went through `e_string`.
                         let name = s.slice(p.arena);
                         p.reserve_prop(name);
                     }

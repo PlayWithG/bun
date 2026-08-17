@@ -68,8 +68,7 @@ pub mod npm {
 // `hoist-pattern`. Moved down from `bun_install` so the npmrc loader does not
 // depend on the full package manager.
 //
-// Regexes are compiled through `crate::regex::RegularExpression`, the
-// link-time bridge to `bun_jsc` (which lives in a higher tier).
+// Patterns are compiled through `crate::regex` (see its module docs).
 // ══════════════════════════════════════════════════════════════════════════
 
 use bun_alloc::Arena;

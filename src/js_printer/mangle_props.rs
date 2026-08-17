@@ -1,17 +1,7 @@
-//! The naming half of `--mangle-props`.
-//!
-//! The parser turned every property name selected for mangling into a
-//! `Kind::MangledProp` symbol (see `bun_js_parser::mangle_props`) and left
-//! those symbols, plus the names it did not mangle, in `Ast::property_mangling`.
-//! This module picks the replacement names: the most used properties get the
-//! shortest names, and a generated name is never a keyword or a reserved name.
-//! The result is a [`MangledProps`] map, which the printer consults through
-//! `Printer::mangled_prop_name` whenever it prints an `E::NameOfSymbol`.
-//!
-//! The linker calls this once per build after merging every file's symbol for
-//! a given name into one (so the counts add up and one name is chosen for the
-//! whole bundle, across chunks); `print_ast` calls it for the single file it
-//! prints when not bundling.
+//! The naming half of `--mangle-props`: given the `MangledProp` symbols the
+//! parser created (merged across files by the linker) and the reserved names,
+//! assigns the shortest names to the most used properties, skipping keywords and
+//! reserved names. The printer reads the result through `Printer::mangled_prop_name`.
 
 use bun_ast::{Ast, CharFreq, Ref, symbol};
 use bun_collections::HashMap;

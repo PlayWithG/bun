@@ -3049,8 +3049,8 @@ declare module "bun" {
      * built: names shared with other code (host APIs, external packages, JSON
      * data, the exports of CommonJS modules) must not match the pattern.
      *
-     * Of the regular expression's flags, `i`, `m`, `u` and `v` are applied; the
-     * others do not affect whether a name matches and are ignored.
+     * A name is renamed when `regexp.test(name)` would be true for a fresh copy
+     * of the regular expression, so all flags behave as usual.
      *
      * Equivalent to `--mangle-props` in `bun build`.
      *

@@ -563,8 +563,7 @@ pub struct P<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> {
 
     pub(crate) const_values: bun_ast::ast_result::ConstValuesMap,
 
-    /// `--mangle-props` bookkeeping, moved into the `Ast` by `to_ast`. See
-    /// `mangle_props.rs`.
+    /// `--mangle-props` state (see `mangle_props.rs`), moved into the `Ast` by `to_ast`.
     pub(crate) mangled_props: bun_ast::MangledPropsMap,
     pub(crate) reserved_props: bun_ast::ReservedPropsSet,
     /// Names the `--mangle-props` patterns rejected (a cache; parser-local).
@@ -4935,8 +4934,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                 continue;
             }
 
-            // A factory like `Foo.createElement_` reads a property the user's own
-            // code defines, so it is renamed along with the definition.
+            // The factory may be a property of the user's own code, e.g. `Foo.createElement_`.
             if self.is_mangling_props() {
                 if let Some(index) = self.mangled_prop_expr(part, loc, false) {
                     value = self.new_expr(

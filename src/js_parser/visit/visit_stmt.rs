@@ -2246,10 +2246,8 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                 value.value = Some(p.new_expr(E::Undefined {}, value.loc));
             }
 
-            // `Enum.Name` accesses that cannot be inlined are mangled like any other
-            // property access, so the member must be defined under the mangled name
-            // too. The reverse mapping below still maps the value to the original
-            // name: it is data, and `Enum[value]` is mostly used to print names.
+            // Non-inlined `Enum.Name` accesses get mangled, so the definition must
+            // be too. The reverse mapping keeps the original name: it is data.
             let mangled_name = if p.is_mangling_props() {
                 p.mangled_prop_expr(name, value.loc, false)
             } else {

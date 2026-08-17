@@ -100,10 +100,8 @@ pub struct BinaryExpressionVisitor {
     /// Input for visiting the left child
     pub(crate) left_in: ExprIn,
 
-    /// `ExprIn::should_mangle_strings_as_props` of the binary expression
-    /// itself. The value of `(a, "x")` is its right operand, so the flag is
-    /// passed on to it. Only the outermost expression of a left-associative
-    /// chain receives it: in `((a, "x"), b)` the inner string is not the value.
+    /// `ExprIn::should_mangle_strings_as_props` of this expression; a comma
+    /// expression passes it on to its right operand, which is its value.
     pub(crate) should_mangle_strings_as_props: bool,
 }
 

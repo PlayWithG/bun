@@ -39,41 +39,13 @@ unsafe extern "C" {
     safe fn Yarr__RegularExpression__matches(this: &RegularExpression, string: BunString) -> i32;
 }
 
-impl Flags {
-    /// Converts a JavaScript `RegExp.prototype.flags` string into the subset of
-    /// flags `JSC::Yarr::RegularExpression` supports (`i`, `m`, `v`). `u` is
-    /// compiled as `v`; `d`, `g`, `s` and `y` do not change whether a string
-    /// matches, so they are ignored. Unknown letters are an error.
-    pub fn bits_from_js_flags(flags: &[u8]) -> Result<u16, RegularExpressionError> {
-        let mut bits: u16 = 0;
-        for &flag in flags {
-            bits |= match flag {
-                b'i' => Flags::IgnoreCase as u16,
-                b'm' => Flags::Multiline as u16,
-                b'u' | b'v' => Flags::UnicodeSets as u16,
-                b'd' | b'g' | b's' | b'y' => 0,
-                _ => return Err(RegularExpressionError::InvalidRegExp),
-            };
-        }
-        Ok(bits)
-    }
-}
-
 impl RegularExpression {
     #[inline]
     pub fn init(
         pattern: BunString,
         flags: Flags,
     ) -> Result<*mut RegularExpression, RegularExpressionError> {
-        Self::init_with_flag_bits(pattern, flags as u16)
-    }
-
-    /// `flags` is a combination of [`Flags`] bits (see [`Flags::bits_from_js_flags`]).
-    pub fn init_with_flag_bits(
-        pattern: BunString,
-        flags: u16,
-    ) -> Result<*mut RegularExpression, RegularExpressionError> {
-        let regex = Yarr__RegularExpression__init(pattern, flags);
+        let regex = Yarr__RegularExpression__init(pattern, flags as u16);
         // `RegularExpression` is an `opaque_ffi!` ZST handle; `opaque_mut` is
         // the centralised non-null-ZST deref proof (panics on null, which
         // `Yarr__RegularExpression__init` never returns).
@@ -109,41 +81,54 @@ impl RegularExpression {
     }
 }
 
+bun_opaque::opaque_ffi! {
+    /// Opaque FFI handle for `Bun::RegExpMatcher` (RegularExpression.cpp): a
+    /// `RegExp` source + flags compiled for `regexp.test(input)` matching.
+    /// Unlike `RegularExpression` it supports every RegExp flag.
+    struct RegExpMatcher;
+}
+
+// Same `safe fn` reasoning as the `RegularExpression` shims above.
+unsafe extern "C" {
+    safe fn Bun__RegExpMatcher__create(
+        pattern: BunString,
+        flags: BunString,
+    ) -> Option<core::ptr::NonNull<RegExpMatcher>>;
+    safe fn Bun__RegExpMatcher__matches(this: &RegExpMatcher, input: BunString) -> bool;
+    fn Bun__RegExpMatcher__destroy(this: *mut RegExpMatcher);
+}
+
 // ──────────────────────────────────────────────────────────────────────────
-// `bun_install_types::regex::RegularExpression` extern impls (used by
-// `PnpmMatcher` and the bundler's `--mangle-props`).
-//
-// Those lower-tier crates cannot name `jsc::RegularExpression`.
-// The bodies live here as `#[no_mangle]` Rust-ABI
-// fns, declared `extern "Rust"` on the low-tier side; link-time resolved.
+// Bodies of the `extern "Rust"` bridge declared in `bun_install_types::regex`,
+// which `PnpmMatcher` and the bundler's `--mangle-props` use because their
+// crates cannot depend on this one.
 // ──────────────────────────────────────────────────────────────────────────
 
-/// `js_flags` is a JavaScript `RegExp` flags string (see
-/// [`Flags::bits_from_js_flags`]). Returns `None` if the pattern or the flags
-/// are invalid.
+/// `None` if `pattern` or `js_flags` (a `RegExp.prototype.flags` string) is invalid.
 #[unsafe(no_mangle)]
 fn __bun_regex_compile(pattern: &[u8], js_flags: &[u8]) -> Option<core::ptr::NonNull<()>> {
-    let flags = Flags::bits_from_js_flags(js_flags).ok()?;
     // Initialize JSC before first compile (idempotent).
     crate::initialize(false);
-    // Yarr copies what it needs out of the pattern while compiling, so a
-    // borrowed view of the bytes is enough.
-    match RegularExpression::init_with_flag_bits(BunString::from_bytes(pattern), flags) {
-        Ok(r) => core::ptr::NonNull::new(r.cast()),
-        Err(_) => None,
-    }
+    // Both strings are only read while compiling, so borrowed views suffice.
+    let matcher = Bun__RegExpMatcher__create(
+        BunString::from_bytes(pattern),
+        BunString::from_bytes(js_flags),
+    )?;
+    Some(matcher.cast())
 }
 
 #[unsafe(no_mangle)]
 fn __bun_regex_matches(regex: core::ptr::NonNull<()>, input: &[u8]) -> bool {
-    // `RegularExpression` is an `opaque_ffi!` ZST handle; `opaque_mut` is the
-    // centralised non-null deref proof. `regex` was produced by
-    // `__bun_regex_compile` and remains live until `__bun_regex_drop`.
-    RegularExpression::opaque_mut(regex.as_ptr().cast()).matches(BunString::from_bytes(input))
+    // `regex` was produced by `__bun_regex_compile` and is live until
+    // `__bun_regex_drop`; `opaque_ref` is the centralised non-null deref proof.
+    Bun__RegExpMatcher__matches(
+        RegExpMatcher::opaque_ref(regex.as_ptr().cast()),
+        BunString::from_bytes(input),
+    )
 }
 
 #[unsafe(no_mangle)]
 fn __bun_regex_drop(regex: core::ptr::NonNull<()>) {
     // SAFETY: `regex` was produced by `__bun_regex_compile`; consumed here.
-    unsafe { RegularExpression::destroy(regex.as_ptr().cast()) }
+    unsafe { Bun__RegExpMatcher__destroy(regex.as_ptr().cast()) }
 }

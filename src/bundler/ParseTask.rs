@@ -2487,8 +2487,7 @@ pub mod parse_worker {
         opts.features.minify_identifiers = topts.minify_identifiers;
         opts.features.minify_keep_names = topts.keep_names;
         opts.features.minify_whitespace = topts.minify_whitespace;
-        // The runtime helpers (`__toESM`, ...) are never mangled: their property
-        // names are part of how the bundle works, not of the user's program.
+        // The runtime helpers are never mangled.
         if !task.source_index.is_runtime() {
             // SAFETY: ARENA — as for `allow_unresolved` above, `topts` belongs to
             // the worker-owned `Transpiler` and outlives the parse.

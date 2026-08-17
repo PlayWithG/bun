@@ -1276,8 +1276,7 @@ pub struct BundleOptions<'a> {
     pub minify_syntax: bool,
     pub minify_identifiers: bool,
     pub keep_names: bool,
-    /// Each worker gets its own clone (see `for_worker`): a compiled regex
-    /// cannot be shared between threads.
+    /// Cloned per worker: a compiled regex must not be shared between threads.
     pub mangle_props: Option<PropertyMangler>,
     pub dead_code_elimination: bool,
     /// REPL mode: transforms code for interactive evaluation with vm.runInContext.

@@ -2406,12 +2406,8 @@ impl<'a> LinkerContext<'a> {
         }
     }
 
-    /// `--mangle-props`: chooses one name per mangled property for the whole
-    /// bundle. Every file created its own `MangledProp` symbol per property
-    /// name (see `bun_js_parser::mangle_props`); here the symbols for the same
-    /// name are merged, so their use counts add up and every chunk prints the
-    /// same name for the property, and then the names are assigned, most used
-    /// first. A name used by any file without mangling it is never assigned.
+    /// `--mangle-props`: merges every file's symbol for a property name into one
+    /// (so use counts add up and all chunks agree) and assigns the names.
     pub(crate) fn mangle_props(&mut self) -> Result<(), bun_alloc::AllocError> {
         let all_property_mangling = self.graph.ast.items_property_mangling();
         if all_property_mangling.iter().all(|file| {

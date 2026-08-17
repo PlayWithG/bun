@@ -1124,8 +1124,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
 
                         if use_define {
                             let field_key = match dot.data {
-                                // `this[<mangled>] = x` above; declare the field under the
-                                // same mangled name.
+                                // Declare the field under the same mangled name.
                                 ExprData::EIndex(_) => self
                                     .mangled_prop_expr(name, bind_loc, false)
                                     .expect("the name was mangled just above"),

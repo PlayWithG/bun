@@ -1,12 +1,6 @@
-//! Configuration for property name mangling (`--mangle-props`, the same
-//! feature as esbuild's option of that name).
-//!
-//! The parser asks [`PropertyMangler::should_mangle`] about every property
-//! name it sees written as syntax (`obj.foo_`, `{ foo_: 1 }`, `class { foo_() {} }`,
-//! `let { foo_ } = obj`, JSX attributes) and, with `mangle_quoted`, also about
-//! names written as string literals. Matching names become `MangledProp`
-//! symbols which the linker (or the printer, when not bundling) renames to the
-//! shortest names available.
+//! Configuration for `--mangle-props` (property name mangling, as in esbuild).
+//! The parser asks [`PropertyMangler::should_mangle`] about every property name
+//! it sees; see `bun_js_parser::mangle_props` for what happens to matches.
 
 use bun_install_types::regex::RegularExpression;
 

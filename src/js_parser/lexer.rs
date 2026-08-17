@@ -263,9 +263,7 @@ pub struct LexerType<
     pub token: T,
     pub(crate) has_newline_before: bool,
     pub(crate) has_pure_comment_before: bool,
-    /// A `/* @__KEY__ */` (or `#__KEY__`) comment precedes the current token.
-    /// Cleared by `next()` like `has_pure_comment_before`; consumed by
-    /// `parse_string_literal` for `--mangle-props`.
+    /// A `@__KEY__` comment precedes the current token (see `--mangle-props`).
     pub(crate) has_property_key_comment_before: bool,
     /// Set (and never cleared by `next()`) once an `eslint-disable[-next-line]`
     /// comment naming `react-hooks/rules-of-hooks` or `react-hooks/exhaustive-deps`

@@ -166,8 +166,7 @@ impl<'a> Options<'a> {
     /// - `features.bundler_feature_flags` — `import { feature } from
     ///   "bun:bundle"` cannot appear in a synthetic single-expr AST.
     /// - `features.runtime_transpiler_cache` — full-parse cache hook only.
-    /// - `mangle_props` — the keys of a lazily exported JSON/TOML object are
-    ///   data, not property names written by the program.
+    /// - `mangle_props` — JSON/TOML keys are data, not property names.
     pub fn clone_for_lazy_export(&self) -> Options<'a> {
         let f = &self.features;
         Options {

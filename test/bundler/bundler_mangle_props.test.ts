@@ -451,6 +451,21 @@ describe("bundler", () => {
     capture: ["o.a", "o.b", "o.public_"],
   });
 
+  itBundled("mangle-props/RegExpFlagsKeepTheirJavaScriptMeaning", {
+    files: {
+      "/entry.js": /* js */ `
+        // "[_(]" is valid in u mode but a syntax error in v mode, and only the s
+        // flag lets "." match the newline in the quoted key.
+        const o = { foo_: 1, "multi\\nline": 2, other: 3 };
+        console.log(o.foo_, o["multi\\nline"], o.other, Object.keys(o).join("|"));
+      `,
+    },
+    backend: "api",
+    mangleProps: /[_(]$|^multi.line$/su,
+    mangleQuoted: true,
+    run: { stdout: "1 2 3 a|b|other" },
+  });
+
   itBundled("mangle-props/CLIWithoutBundling", {
     files: {
       "/entry.js": /* js */ `
@@ -525,7 +540,8 @@ describe("bundler", () => {
       stdout: "pipe",
       stderr: "pipe",
     });
-    const [stderr, exitCode] = await Promise.all([proc.stderr.text(), proc.exited]);
+    const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+    expect(stdout).toBe("");
     expect(stderr).toContain('--mangle-props expects a valid regular expression but received "("');
     expect(exitCode).toBe(1);
   });
@@ -539,7 +555,8 @@ describe("bundler", () => {
       stdout: "pipe",
       stderr: "pipe",
     });
-    const [stderr, exitCode] = await Promise.all([proc.stderr.text(), proc.exited]);
+    const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+    expect(stdout).toBe("");
     expect(stderr).toContain('--reserve-props expects a valid regular expression but received "["');
     expect(exitCode).toBe(1);
   });

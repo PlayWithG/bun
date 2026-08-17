@@ -78,9 +78,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                                 }
                                 let arg_ref = ts.arg_ref;
                                 let new_ref = self.new_symbol(js_ast::symbol::Kind::Other, name);
-                                // The namespace's export is defined under the mangled
-                                // name (see `dot_or_mangled_prop`), so the generated
-                                // property access has to use it too.
+                                // The export itself is defined under the mangled name.
                                 let mangled_prop_ref = if self.is_mangled_prop(name) {
                                     Some(self.symbol_for_mangled_prop(name))
                                 } else {

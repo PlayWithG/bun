@@ -64,9 +64,7 @@ use renamer as rename;
 
 pub mod mangle_props;
 
-/// Map of mangled property `Ref` → final mangled name bytes. Filled by
-/// `mangle_props::assign_mangled_prop_names` (JS `--mangle-props`) and by the
-/// linker's CSS modules support (local class names), read through
+/// Mangled property (or CSS module local) `Ref` → final name, read through
 /// `Printer::mangled_prop_name`.
 // PERF: `Box<[u8]>` values own their bytes —
 // revisit if profiling shows allocation pressure during link.
@@ -1756,9 +1754,7 @@ pub(crate) mod __gated_printer {
             }
         }
 
-        /// The name to print for an `E::NameOfSymbol`: the name assigned by
-        /// `mangle_props::assign_mangled_prop_names` (or, for CSS modules, the
-        /// linker), falling back to the symbol's own name.
+        /// The name to print for an `E::NameOfSymbol`.
         pub(crate) fn mangled_prop_name(&mut self, ref_: Ref) -> &'a [u8] {
             let ref_ = self.symbols().follow(ref_);
             if let Some(mangled_props) = self.options.mangled_props {
@@ -1772,8 +1768,6 @@ pub(crate) mod __gated_printer {
         /// The property name a `Kind::MangledProp` symbol was created for.
         pub(crate) fn original_name_of_mangled_prop(&mut self, ref_: Ref) -> &'a [u8] {
             let ref_ = self.symbols().follow(ref_);
-            // `StoreStr::slice` re-borrows the arena-owned name, so the symbol
-            // table borrow ends here.
             self.symbols()
                 .get_const(ref_)
                 .unwrap()
@@ -3478,8 +3472,7 @@ pub(crate) mod __gated_printer {
                                 }
                             }
                         } else if let ExprData::ENameOfSymbol(name) = &e.index.data {
-                            // A mangled `Enum.Member` access can still be inlined: enum
-                            // members are recorded under their original names.
+                            // Enum members are recorded under their original names.
                             let original_name = self.original_name_of_mangled_prop(name.ref_);
                             if let Some(value) =
                                 self.try_to_get_imported_enum_value(e.target, original_name)

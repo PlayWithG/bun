@@ -32,9 +32,8 @@ pub struct NamespaceAlias {
 
     pub import_record_index: u32,
 
-    /// Set when `alias` names a property renamed by `--mangle-props` (a
-    /// reference to an export of a sibling TypeScript namespace block): the
-    /// printer prints this symbol's mangled name instead of `alias`.
+    /// `--mangle-props` renamed the property `alias` refers to; print this
+    /// symbol's mangled name instead of `alias`.
     pub mangled_prop_ref: Option<Ref>,
 }
 

@@ -876,7 +876,7 @@ pub mod js_bundler {
                             ),
                         };
                         return Err(global_this.throw_invalid_arguments(format_args!(
-                            "{} is not a supported regular expression: /{}/{}",
+                            "{} could not be compiled: /{}/{}",
                             property,
                             bstr::BStr::new(pattern.source.slice()),
                             bstr::BStr::new(pattern.flags.slice()),

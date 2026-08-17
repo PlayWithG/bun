@@ -75,8 +75,7 @@ impl<'a, const TYPESCRIPT: bool, const SCAN_ONLY: bool> P<'a, TYPESCRIPT, SCAN_O
                             key_prop_i = i;
                         }
 
-                        // Namespaced names (`xlink:href`) are not properties
-                        // React code reads, so they are left alone by --mangle-props.
+                        // Namespaced attributes (`xlink:href`) are never mangled.
                         let prop_name = if strings::contains_char(prop_name_literal, b':') {
                             p.reserve_prop(prop_name_literal);
                             p.new_expr(E::EString::init(prop_name_literal), key_range.loc)

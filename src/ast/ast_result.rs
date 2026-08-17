@@ -82,8 +82,7 @@ pub struct Ast<'a> {
     // const_values: ConstValuesMap,
     pub ts_enums: TsEnumsMap,
 
-    /// `None` unless the file was parsed with `--mangle-props`. Boxed because
-    /// most builds never use it and `Ast` is copied around by value.
+    /// Set when the file was parsed with `--mangle-props`.
     pub property_mangling: Option<bun_alloc::AstBox<PropertyMangling>>,
 
     /// Not to be confused with `commonjs_named_exports`
@@ -169,14 +168,12 @@ pub type TsEnumsMap =
 pub type MangledPropsMap = StringArrayHashMap<Ref, StringContext, AstAlloc>;
 pub type ReservedPropsSet = StringArrayHashMap<(), StringContext, AstAlloc>;
 
-/// What `--mangle-props` collected while parsing one file. The linker (or the
-/// printer, when not bundling) turns this into the final names.
+/// What `--mangle-props` collected from one file; the names are chosen later.
 #[derive(Default)]
 pub struct PropertyMangling {
     /// Property name → this file's `MangledProp` symbol for it.
     pub mangled_props: MangledPropsMap,
-    /// Property names this file uses without mangling them. No mangled
-    /// property may be given one of these names.
+    /// Property names used without mangling; never handed out as mangled names.
     pub reserved_props: ReservedPropsSet,
 }
 

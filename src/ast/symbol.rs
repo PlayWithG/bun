@@ -311,10 +311,8 @@ pub enum Kind {
     // CSS identifiers that are renamed to be unique to the file they are in
     LocalCss,
 
-    /// A property name selected by `--mangle-props`. These symbols are never
-    /// declared in a scope; `E::NameOfSymbol` nodes reference them and the
-    /// linker (or the printer, when not bundling) assigns them short names.
-    /// Symbols for the same name in different files are merged by the linker.
+    /// A property name selected by `--mangle-props`, referenced from
+    /// `E::NameOfSymbol` nodes. Never declared in a scope.
     MangledProp,
 
     /// This annotates all other symbols that don't have special behavior.
