@@ -274,6 +274,13 @@ describe.concurrent("undici.EventSource", () => {
     expect(() => new EventSource("http://localhost/", { node: { reconnectionTime: "5" } })).toThrow(
       expect.objectContaining({ code: "ERR_INVALID_ARG_TYPE" }),
     );
+    expect(() => new EventSource("http://localhost/", "with-credentials" as any)).toThrow(TypeError);
+    // A dictionary argument accepts null and undefined as "no options".
+    for (const init of [null, undefined]) {
+      const es = new EventSource("http://127.0.0.1:1/", init as any);
+      es.close();
+      expect(es.readyState).toBe(EventSource.CLOSED);
+    }
   });
 
   it("connects and dispatches MessageEvents", async () => {
@@ -414,14 +421,18 @@ describe.concurrent("undici.EventSource", () => {
   });
 
   it("reconnects after the server ends the stream, sending Last-Event-ID and honoring retry:", async () => {
-    const lastEventIds: (string | null)[] = [];
+    // One character inside Latin-1 and one outside it: the header has to carry the id's UTF-8 bytes.
+    const id = "\u00e9v\u00e9nement \u2026 7";
+    const lastEventIdHeaders: (string | null)[] = [];
     using server = Bun.serve({
       port: 0,
       fetch(req) {
-        lastEventIds.push(req.headers.get("last-event-id"));
-        if (lastEventIds.length === 1) {
+        // Header values arrive one character per byte; decode them as UTF-8 like an SSE server would.
+        const header = req.headers.get("last-event-id");
+        lastEventIdHeaders.push(header === null ? null : Buffer.from(header, "latin1").toString());
+        if (lastEventIdHeaders.length === 1) {
           // `id: 8` is never followed by a blank line, so it must not become the last event id.
-          return sse("retry: 10\n\nid: 7\ndata: first\n\nid: 8\ndata: incomplete");
+          return sse(`retry: 10\n\nid: ${id}\ndata: first\n\nid: 8\ndata: incomplete`);
         }
         return sse("data: second\n\n");
       },
@@ -433,13 +444,13 @@ describe.concurrent("undici.EventSource", () => {
       await done;
       expect(seen).toEqual([
         { type: "open", readyState: 1 },
-        { type: "message", readyState: 1, data: "first", lastEventId: "7" },
+        { type: "message", readyState: 1, data: "first", lastEventId: id },
         { type: "error", readyState: 0 },
         { type: "open", readyState: 1 },
-        { type: "message", readyState: 1, data: "second", lastEventId: "7" },
+        { type: "message", readyState: 1, data: "second", lastEventId: id },
         { type: "error", readyState: 0 },
       ]);
-      expect(lastEventIds).toEqual([null, "7"]);
+      expect(lastEventIdHeaders).toEqual([null, id]);
     } finally {
       es.close();
     }
@@ -511,6 +522,7 @@ describe.concurrent("undici.EventSource", () => {
       "a 200 with another content type",
       () => new Response("data: x\n\n", { headers: { "content-type": "text/plain" } }),
     ],
+    ["a 401 when the URL carries no credentials", () => new Response(null, { status: 401 })],
   ])("fails the connection without reconnecting on %s", async (_, respond) => {
     using server = Bun.serve({ port: 0, fetch: respond });
 
@@ -664,6 +676,125 @@ describe.concurrent("undici.EventSource", () => {
     } finally {
       es.close();
     }
+  });
+
+  it("does not route its own events and handler registration through subclass overrides", async () => {
+    using server = Bun.serve({ port: 0, fetch: () => sse("data: x\n\n") });
+    const overrideCalls: string[] = [];
+    class Logged extends EventSource {
+      addEventListener(type: string, listener: any, options?: any) {
+        overrideCalls.push(`addEventListener:${type}`);
+        super.addEventListener(type, listener, options);
+      }
+      dispatchEvent(event: Event) {
+        overrideCalls.push(`dispatchEvent:${event.type}`);
+        return super.dispatchEvent(event);
+      }
+    }
+
+    const es = new Logged(server.url);
+    try {
+      const { seen, done } = record(es, isError);
+      es.onmessage = () => {};
+      es.dispatchEvent(new Event("custom"));
+      await done;
+      expect(seen).toEqual([
+        { type: "open", readyState: 1 },
+        { type: "message", readyState: 1, data: "x", lastEventId: "" },
+        { type: "error", readyState: 0 },
+      ]);
+      // Only the explicit calls made by the test went through the overrides, as with a native EventTarget subclass.
+      expect(overrideCalls).toEqual([
+        "addEventListener:open",
+        "addEventListener:message",
+        "addEventListener:error",
+        "dispatchEvent:custom",
+      ]);
+    } finally {
+      es.close();
+    }
+  });
+
+  it("answers a 401 challenge with the credentials embedded in the URL, and keeps sending them when reconnecting", async () => {
+    const authorizations: (string | null)[] = [];
+    using server = Bun.serve({
+      port: 0,
+      fetch(req) {
+        const authorization = req.headers.get("authorization");
+        authorizations.push(authorization);
+        if (authorization === null) {
+          return new Response(null, { status: 401, headers: { "www-authenticate": 'Basic realm="events"' } });
+        }
+        return sse(`retry: 10\ndata: stream ${authorizations.length}\n\n`);
+      },
+    });
+
+    const url = `http://user:p%40ss@127.0.0.1:${server.port}/events`;
+    const es = new EventSource(url);
+    try {
+      const { seen, done } = record(es, nthError(2));
+      await done;
+      expect(es.url).toBe(url);
+      // The challenge round trip is invisible: the first observable event is the open of the authenticated request.
+      expect(seen).toEqual([
+        { type: "open", readyState: 1 },
+        { type: "message", readyState: 1, data: "stream 2", lastEventId: "" },
+        { type: "error", readyState: 0 },
+        { type: "open", readyState: 1 },
+        { type: "message", readyState: 1, data: "stream 3", lastEventId: "" },
+        { type: "error", readyState: 0 },
+      ]);
+      const basic = `Basic ${btoa("user:p@ss")}`;
+      expect(authorizations).toEqual([null, basic, basic]);
+    } finally {
+      es.close();
+    }
+  });
+
+  it("fails the connection with an ErrorEvent when the stream cannot be parsed", async () => {
+    // Parsing only throws on resource exhaustion (a line too long to hold in a string), which is too expensive to
+    // provoke in a test, so the decoder is made to throw instead. A subprocess keeps the patched global contained.
+    await using proc = Bun.spawn({
+      cmd: [
+        bunExe(),
+        "-e",
+        `const { EventSource } = require("undici");
+         const cancelled = Promise.withResolvers();
+         const server = Bun.serve({
+           port: 0,
+           fetch: () =>
+             new Response(
+               new ReadableStream({
+                 start(controller) { controller.enqueue(new TextEncoder().encode("data: x\\n\\n")); },
+                 cancel() { cancelled.resolve(); },
+               }),
+               { headers: { "content-type": "text/event-stream" } },
+             ),
+         });
+         globalThis.TextDecoder = class { decode() { throw new RangeError("decoder boom"); } };
+         const es = new EventSource(server.url);
+         es.onmessage = () => console.log("unexpected message");
+         es.onerror = async event => {
+           await cancelled.promise;
+           console.log(JSON.stringify({
+             event: event.constructor.name,
+             message: event.message,
+             error: event.error instanceof RangeError,
+             readyState: es.readyState,
+           }));
+           server.stop(true);
+         };`,
+      ],
+      env: bunEnv,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+    expect(stdout).toBe(
+      JSON.stringify({ event: "ErrorEvent", message: "decoder boom", error: true, readyState: 2 }) + "\n",
+    );
+    expect(stderr).toBe("");
+    expect(exitCode).toBe(0);
   });
 
   it("a refused connection reports an error without keeping the process alive for the reconnect", async () => {

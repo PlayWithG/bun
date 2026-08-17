@@ -394,7 +394,22 @@ function isEventStreamContentType(contentType) {
   if (contentType === null) return false;
   const semicolon = contentType.indexOf(";");
   const essence = semicolon === -1 ? contentType : contentType.slice(0, semicolon);
-  return essence.trim().toLowerCase() === "text/event-stream";
+  // Only HTTP whitespace may surround the type; String#trim would also strip characters the MIME parser rejects.
+  return essence.replace(/^[\t\n\r ]+|[\t\n\r ]+$/g, "").toLowerCase() === "text/event-stream";
+}
+
+function percentDecode(component) {
+  try {
+    return decodeURIComponent(component);
+  } catch {
+    return component;
+  }
+}
+
+// https://fetch.spec.whatwg.org/#concept-url-converted-to-authorization-value
+function basicAuthorizationFor(url) {
+  if (url.username === "" && url.password === "") return null;
+  return "Basic " + Buffer.from(`${percentDecode(url.username)}:${percentDecode(url.password)}`).toString("base64");
 }
 
 /**
@@ -407,6 +422,10 @@ class EventSource extends EventTarget {
   #readyState = kConnecting;
   #lastEventId = "";
   #reconnectionTime = kDefaultReconnectionTime;
+  // Credentials embedded in the URL, as an Authorization header value. Like a browser, they are only sent once the
+  // server has answered 401 (#challenged), from then on with every request.
+  #authorization = null;
+  #challenged = false;
 
   // Non-null while a fetch is in flight or its body is being read. Every async continuation compares against it so
   // that a connection which has been closed or superseded cannot touch the EventSource anymore.
@@ -439,8 +458,12 @@ class EventSource extends EventTarget {
       throw new DOMException(`Cannot open an EventSource to '${url}'. The URL is invalid.`, "SyntaxError");
     }
     this.#url = parsed.href;
+    this.#authorization = basicAuthorizationFor(parsed);
 
-    if ($isObject(init)) {
+    if (init !== undefined && init !== null) {
+      if (!$isObject(init)) {
+        throw new TypeError("EventSource constructor: the second argument must be a dictionary.");
+      }
       this.#withCredentials = !!init.withCredentials;
       // undici extension: `{ node: { reconnectionTime } }` overrides the delay used until the server sends `retry:`.
       const reconnectionTime = init.node?.reconnectionTime;
@@ -527,12 +550,12 @@ class EventSource extends EventTarget {
     this.#controller = controller;
 
     const headers = new Headers({ "accept": "text/event-stream", "cache-control": "no-cache" });
+    if (this.#challenged) headers.set("authorization", this.#authorization);
     if (this.#lastEventId !== "") {
-      try {
-        headers.set("last-event-id", this.#lastEventId);
-      } catch {
-        // fetch() cannot carry header values outside Latin-1. Resuming without the id beats never reconnecting.
-      }
+      // The header carries the id's UTF-8 bytes. Header values are byte strings (one byte per code unit), so those
+      // bytes are spelled out as Latin-1; passing the id itself would send it as Latin-1, or be rejected for
+      // characters outside of it.
+      headers.set("last-event-id", Buffer.from(this.#lastEventId).toString("latin1"));
     }
 
     fetch(this.#url, { headers, signal: controller.signal }).then(
@@ -548,13 +571,19 @@ class EventSource extends EventTarget {
   }
 
   #onResponse(controller, response) {
+    if (response.status === 401 && this.#authorization !== null && !this.#challenged) {
+      this.#challenged = true;
+      this.#abort();
+      this.#connect();
+      return;
+    }
     if (response.status !== 200 || !isEventStreamContentType(response.headers.get("content-type"))) {
       this.#fail();
       return;
     }
 
     this.#readyState = kOpen;
-    this.dispatchEvent(new Event("open"));
+    super.dispatchEvent(new Event("open"));
     // The open handler may have called close().
     if (this.#controller !== controller) return;
 
@@ -582,7 +611,13 @@ class EventSource extends EventTarget {
       }
       if (this.#controller !== controller) return;
       if (result.done) break;
-      this.#feed(result.value);
+      try {
+        this.#feed(result.value);
+      } catch (error) {
+        // Typically a line too long to fit in a string. Without this the stream would stay OPEN with nobody reading it.
+        if (this.#controller === controller) this.#fail(error);
+        return;
+      }
       if (this.#controller !== controller) return;
     }
 
@@ -674,7 +709,7 @@ class EventSource extends EventTarget {
     this.#eventTypeBuffer = "";
     if (data === "") return;
 
-    this.dispatchEvent(
+    super.dispatchEvent(
       new MessageEvent(type === "" ? "message" : type, {
         // Every `data:` line appended a LF; the last one is not part of the payload.
         data: data.slice(0, -1),
@@ -685,17 +720,23 @@ class EventSource extends EventTarget {
   }
 
   // https://html.spec.whatwg.org/multipage/server-sent-events.html#fail-the-connection
-  #fail() {
+  // The spec's error event is a plain Event. When the failure is an exception rather than a server response, it is
+  // attached the way Bun's WebSocket reports errors, since the event is the only place it can surface.
+  #fail(error) {
     this.#readyState = kClosed;
     this.#abort();
-    this.dispatchEvent(new Event("error"));
+    super.dispatchEvent(
+      error === undefined
+        ? new Event("error")
+        : new ErrorEvent("error", { error, message: `${error?.message ?? error}` }),
+    );
   }
 
   // https://html.spec.whatwg.org/multipage/server-sent-events.html#reestablish-the-connection
   #reestablish() {
     this.#controller = null;
     this.#readyState = kConnecting;
-    this.dispatchEvent(new Event("error"));
+    super.dispatchEvent(new Event("error"));
     // The error handler may have called close().
     if (this.#readyState !== kConnecting) return;
 

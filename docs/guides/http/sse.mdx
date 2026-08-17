@@ -92,7 +92,7 @@ Bun.serve({
 
 ## Consuming a stream from Bun
 
-Bun has no `EventSource` global. To consume an SSE stream from a Bun script, import `EventSource` from `undici`. Bun ships its own `undici` module, so the import works without installing the package.
+Bun has no `EventSource` global. To consume an SSE stream from a Bun script, add the `undici` package with `bun add undici` and import `EventSource` from it. The package provides the TypeScript types; at runtime, Bun resolves `undici` to its built-in implementation.
 
 ```ts client.ts icon="/icons/typescript.svg"
 import { EventSource } from "undici";
