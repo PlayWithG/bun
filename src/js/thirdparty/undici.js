@@ -412,23 +412,23 @@ function basicAuthorizationFor(url) {
   return "Basic " + Buffer.from(`${percentDecode(url.username)}:${percentDecode(url.password)}`).toString("base64");
 }
 
-/**
- * Server-Sent Events client, built on fetch() the same way undici's is.
- * https://html.spec.whatwg.org/multipage/server-sent-events.html
- */
+// Header values are byte strings (one byte per code unit); this spells out a string's UTF-8 bytes as one.
+function utf8ByteString(string) {
+  return Buffer.from(string).toString("latin1");
+}
+
+// https://html.spec.whatwg.org/multipage/server-sent-events.html
 class EventSource extends EventTarget {
   #url;
   #withCredentials = false;
   #readyState = kConnecting;
   #lastEventId = "";
   #reconnectionTime = kDefaultReconnectionTime;
-  // Credentials embedded in the URL, as an Authorization header value. Like a browser, they are only sent once the
-  // server has answered 401 (#challenged), from then on with every request.
+  // Credentials from the URL as an Authorization value, sent once a 401 has asked for them (#challenged).
   #authorization = null;
   #challenged = false;
 
-  // Non-null while a fetch is in flight or its body is being read. Every async continuation compares against it so
-  // that a connection which has been closed or superseded cannot touch the EventSource anymore.
+  // The current connection. Async continuations compare against it, so a closed or superseded connection is inert.
   #controller = null;
   #reconnectTimer = null;
 
@@ -551,12 +551,7 @@ class EventSource extends EventTarget {
 
     const headers = new Headers({ "accept": "text/event-stream", "cache-control": "no-cache" });
     if (this.#challenged) headers.set("authorization", this.#authorization);
-    if (this.#lastEventId !== "") {
-      // The header carries the id's UTF-8 bytes. Header values are byte strings (one byte per code unit), so those
-      // bytes are spelled out as Latin-1; passing the id itself would send it as Latin-1, or be rejected for
-      // characters outside of it.
-      headers.set("last-event-id", Buffer.from(this.#lastEventId).toString("latin1"));
-    }
+    if (this.#lastEventId !== "") headers.set("last-event-id", utf8ByteString(this.#lastEventId));
 
     fetch(this.#url, { headers, signal: controller.signal }).then(
       response => {
@@ -720,8 +715,7 @@ class EventSource extends EventTarget {
   }
 
   // https://html.spec.whatwg.org/multipage/server-sent-events.html#fail-the-connection
-  // The spec's error event is a plain Event. When the failure is an exception rather than a server response, it is
-  // attached the way Bun's WebSocket reports errors, since the event is the only place it can surface.
+  // An exception caught in #readBody rides along as an ErrorEvent, the way Bun's WebSocket reports errors.
   #fail(error) {
     this.#readyState = kClosed;
     this.#abort();
