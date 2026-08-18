@@ -408,10 +408,10 @@ void ${proto}::finishCreation(JSC::VM& vm, JSC::JSGlobalObject* globalObject)
     Base::finishCreation(vm);
     ${
       Object.keys(protoFields).length > 0
-        ? `reifyStaticProperties(vm, ${className(typeName)}::info(), ${proto}TableValues, *this);`
+        ? `Bun::reifyStaticProperties(vm, ${className(typeName)}::info(), ${proto}TableValues, *this);`
         : ""
     }${specialSymbols}${staticPrototypeValues}
-    JSC_TO_STRING_TAG_WITHOUT_TRANSITION();
+    Bun::putToStringTag(vm, *this, info()->className);
 }
 
 `;
@@ -441,7 +441,7 @@ class ${proto} ${final ? "final" : ""} : public JSC::JSNonFinalObject {
       }
       static JSC::Structure* createStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::JSValue prototype)
       {
-          return JSC::Structure::create(vm, globalObject, prototype, JSC::TypeInfo(JSC::ObjectType, StructureFlags), info());
+          return Bun::createClassStructure(vm, globalObject, prototype, JSC::TypeInfo(JSC::ObjectType, StructureFlags), info());
       }
 
   protected:
@@ -474,7 +474,7 @@ class ${name} final : public JSC::InternalFunction {
 
       static JSC::Structure* createStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::JSValue prototype)
       {
-          return JSC::Structure::create(vm, globalObject, prototype, JSC::TypeInfo(JSC::InternalFunctionType, StructureFlags), info());
+          return Bun::createClassStructure(vm, globalObject, prototype, JSC::TypeInfo(JSC::InternalFunctionType, StructureFlags), info());
       }
 
       template<typename, JSC::SubspaceAccess mode> static JSC::GCClient::IsoSubspace* subspaceFor(JSC::VM& vm)
@@ -520,8 +520,8 @@ ${hashTable}
 void ${name}::finishCreation(VM& vm, JSC::JSGlobalObject* globalObject, ${prototypeName(typeName)}* prototype)
 {
     Base::finishCreation(vm, 0, "${typeName}"_s, PropertyAdditionMode::WithoutStructureTransition);
-    ${hashTableIdentifier.length ? `reifyStaticProperties(vm, &${name}::s_info, ${hashTableIdentifier}, *this);` : ""}
-    putDirectWithoutTransition(vm, vm.propertyNames->prototype, prototype, PropertyAttribute::DontEnum | PropertyAttribute::DontDelete | PropertyAttribute::ReadOnly);
+    ${hashTableIdentifier.length ? `Bun::reifyStaticProperties(vm, &${name}::s_info, ${hashTableIdentifier}, *this);` : ""}
+    Bun::putConstructorPrototype(vm, *this, prototype);
     ASSERT(inherits(info()));
 }
 
@@ -541,10 +541,14 @@ ${name}* ${name}::create(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::St
 
 JSC::EncodedJSValue JSC_HOST_CALL_ATTRIBUTES ${name}::call(JSC::JSGlobalObject* lexicalGlobalObject, JSC::CallFrame* callFrame)
 {
-    Zig::GlobalObject *globalObject = reinterpret_cast<Zig::GlobalObject*>(lexicalGlobalObject);
+${
+  obj.call
+    ? `    Zig::GlobalObject *globalObject = reinterpret_cast<Zig::GlobalObject*>(lexicalGlobalObject);
     JSC::VM &vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
-
+`
+    : ""
+}
 ${
   obj.call
     ? !obj.constructNeedsThis
@@ -571,8 +575,7 @@ ${
     instance->m_ctx = ptr;
 `
     : `
-    Bun::throwError(lexicalGlobalObject, scope, Bun::ErrorCode::ERR_ILLEGAL_CONSTRUCTOR, "${typeName} constructor cannot be invoked without 'new'"_s);
-    return JSValue::encode(JSC::jsUndefined());
+    return Bun::throwConstructorCannotBeCalled(lexicalGlobalObject, "${typeName} constructor cannot be invoked without 'new'"_s);
 `
 }
 
@@ -1138,7 +1141,7 @@ function generateClassHeader(typeName, obj: ClassDefinition) {
         static void destroy(JSC::JSCell*);
         static JSC::Structure* createStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::JSValue prototype)
         {
-            return JSC::Structure::create(vm, globalObject, prototype, JSC::TypeInfo(static_cast<JSC::JSType>(${JSType}), StructureFlags), info());
+            return Bun::createClassStructure(vm, globalObject, prototype, JSC::TypeInfo(static_cast<JSC::JSType>(${JSType}), StructureFlags), info());
         }
 
         static JSObject* createPrototype(VM& vm, JSDOMGlobalObject* globalObject);
@@ -1477,19 +1480,9 @@ void ${name}::analyzeHeap(JSCell* cell, HeapAnalyzer& analyzer)
     }
 
     Base::analyzeHeap(cell, analyzer);
-    ${allCachedValues(obj).length > 0 ? `auto& vm = thisObject->vm();` : ""}
-
     ${allCachedValues(obj)
-      .map(
-        ([name, cacheName]) => `
-if (JSValue ${cacheName}Value = thisObject->${cacheName}.get()) {
-  if (${cacheName}Value.isCell()) {
-    const Identifier& id = Identifier::fromString(vm, "${name}"_s);
-    analyzer.analyzePropertyNameEdge(cell, ${cacheName}Value.asCell(), id.impl());
-  }
-}`,
-      )
-      .join("\n  ")}
+      .map(([name, cacheName]) => `Bun::analyzeCachedValueEdge(cell, analyzer, thisObject->${cacheName}, "${name}"_s);`)
+      .join("\n    ")}
 }
 
 ${
@@ -1505,14 +1498,13 @@ ${
 
 JSObject* ${name}::createPrototype(VM& vm, JSDOMGlobalObject* globalObject)
 {
-    auto *structure = ${prototypeName(typeName)}::createStructure(vm, globalObject, ${
+    auto *structure = Bun::createPrototypeStructure(vm, globalObject, ${
       obj.forBind
         ? "globalObject->functionPrototype()"
         : obj.prototypeBase === "Error"
           ? "globalObject->errorPrototype()"
           : "globalObject->objectPrototype()"
-    });
-    structure->setMayBePrototype(true);
+    }, ${prototypeName(typeName)}::info());
     return ${prototypeName(typeName)}::create(vm, globalObject, structure);
 }
 
@@ -2291,6 +2283,7 @@ JSC_DECLARE_HOST_FUNCTION(jsFunctionInherits);
 }
 
 #include "JSDOMWrapper.h"
+#include "GeneratedClassSupport.h"
 #include <wtf/NeverDestroyed.h>
 #include "SerializedScriptValue.h"
 `,
