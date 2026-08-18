@@ -1662,10 +1662,7 @@ impl CommandLineReporter {
         let mut failing = false;
 
         if reporters_text {
-            if console
-                .write_all(&Output::pretty_fmt_rt("<r><d>", enable_ansi_colors))
-                .is_err()
-            {
+            if bun_core::write_pretty!(console, enable_ansi_colors, "<r><d>").is_err() {
                 return Ok(());
             }
             if console
@@ -1674,12 +1671,12 @@ impl CommandLineReporter {
             {
                 return Ok(());
             }
-            if console
-                .write_all(&Output::pretty_fmt_rt(
-                    "|---------|---------|-------------------<r>\n",
-                    enable_ansi_colors,
-                ))
-                .is_err()
+            if bun_core::write_pretty!(
+                console,
+                enable_ansi_colors,
+                "|---------|---------|-------------------<r>\n"
+            )
+            .is_err()
             {
                 return Ok(());
             }
@@ -1692,19 +1689,16 @@ impl CommandLineReporter {
             {
                 return Ok(());
             }
-            if console
-                .write_all(&Output::pretty_fmt_rt(
-                    " <d>|<r> % Funcs <d>|<r> % Lines <d>|<r> Uncovered Line #s\n",
-                    enable_ansi_colors,
-                ))
-                .is_err()
+            if bun_core::write_pretty!(
+                console,
+                enable_ansi_colors,
+                " <d>|<r> % Funcs <d>|<r> % Lines <d>|<r> Uncovered Line #s\n"
+            )
+            .is_err()
             {
                 return Ok(());
             }
-            if console
-                .write_all(&Output::pretty_fmt_rt("<d>", enable_ansi_colors))
-                .is_err()
-            {
+            if bun_core::write_pretty!(console, enable_ansi_colors, "<d>").is_err() {
                 return Ok(());
             }
             if console
@@ -1713,12 +1707,12 @@ impl CommandLineReporter {
             {
                 return Ok(());
             }
-            if console
-                .write_all(&Output::pretty_fmt_rt(
-                    "|---------|---------|-------------------<r>\n",
-                    enable_ansi_colors,
-                ))
-                .is_err()
+            if bun_core::write_pretty!(
+                console,
+                enable_ansi_colors,
+                "|---------|---------|-------------------<r>\n"
+            )
+            .is_err()
             {
                 return Ok(());
             }
@@ -1912,11 +1906,11 @@ impl CommandLineReporter {
                     enable_ansi_colors,
                 )?;
 
-                console.write_all(&Output::pretty_fmt_rt("<r><d> |<r>\n", enable_ansi_colors))?;
+                bun_core::write_pretty!(console, enable_ansi_colors, "<r><d> |<r>\n")?;
             }
 
             console.write_all(&console_buffer)?;
-            console.write_all(&Output::pretty_fmt_rt("<r><d>", enable_ansi_colors))?;
+            bun_core::write_pretty!(console, enable_ansi_colors, "<r><d>")?;
             // Disarm the lcov cleanup guard before the early `Ok(())`; the
             // temp file is left for the OS.
             if console
@@ -1926,12 +1920,12 @@ impl CommandLineReporter {
                 let _ = scopeguard::ScopeGuard::into_inner(lcov_guard);
                 return Ok(());
             }
-            if console
-                .write_all(&Output::pretty_fmt_rt(
-                    "|---------|---------|-------------------<r>\n",
-                    enable_ansi_colors,
-                ))
-                .is_err()
+            if bun_core::write_pretty!(
+                console,
+                enable_ansi_colors,
+                "|---------|---------|-------------------<r>\n"
+            )
+            .is_err()
             {
                 let _ = scopeguard::ScopeGuard::into_inner(lcov_guard);
                 return Ok(());
