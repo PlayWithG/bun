@@ -28,15 +28,9 @@ use bun_sys::{self, Fd, File};
 // Debug log scope for test-runner entrypoint loading.
 bun_output::declare_scope!(bun_test, hidden);
 
-// ─── coverage façade ────────────────────────────────────────────────────────
-// Thin adapter over `bun_sourcemap_jsc::code_coverage` that preserves the
-// legacy call paths used in `print_code_coverage` below (the adapter
-// dispatches the runtime `enable_ansi_colors` bool to the const generic).
-// Drop once the body is normalised to call `code_coverage::{text,lcov}`
-// directly with `<ENABLE_ANSI_COLORS>`.
 mod coverage {
     pub(super) use bun_sourcemap_jsc::code_coverage::{
-        ByteRangeMapping, Fraction, Report as CodeCoverageReport, lcov as Lcov,
+        ByteRangeMapping, Fraction, Report as CodeCoverageReport, lcov as Lcov, text as Text,
     };
 
     /// Less-than predicate adapted to the `Ordering` shape `sort_by` wants.
@@ -46,70 +40,6 @@ mod coverage {
         b: &&mut ByteRangeMapping,
     ) -> core::cmp::Ordering {
         bun_core::order(a.source_url.slice(), b.source_url.slice())
-    }
-
-    #[allow(non_snake_case)]
-    pub(super) mod Text {
-        use super::*;
-        use bun_sourcemap_jsc::code_coverage::text;
-
-        /// Runtime-bool → const-generic dispatch for `text::write_format`.
-        #[inline]
-        pub(crate) fn write_format(
-            report: &CodeCoverageReport,
-            max_filename_length: usize,
-            fraction: &mut Fraction,
-            base_path: &[u8],
-            writer: &mut impl bun_io::Write,
-            enable_ansi_colors: bool,
-        ) -> bun_io::Result<()> {
-            if enable_ansi_colors {
-                text::write_format::<true>(report, max_filename_length, fraction, base_path, writer)
-            } else {
-                text::write_format::<false>(
-                    report,
-                    max_filename_length,
-                    fraction,
-                    base_path,
-                    writer,
-                )
-            }
-        }
-
-        /// Runtime-bool → const-generic dispatch for `text::write_format_with_values`.
-        #[inline]
-        pub(crate) fn write_format_with_values(
-            filename: &[u8],
-            max_filename_length: usize,
-            vals: Fraction,
-            failing: Fraction,
-            failed: bool,
-            writer: &mut impl bun_io::Write,
-            indent_name: bool,
-            enable_ansi_colors: bool,
-        ) -> bun_io::Result<()> {
-            if enable_ansi_colors {
-                text::write_format_with_values::<true>(
-                    filename,
-                    max_filename_length,
-                    vals,
-                    failing,
-                    failed,
-                    writer,
-                    indent_name,
-                )
-            } else {
-                text::write_format_with_values::<false>(
-                    filename,
-                    max_filename_length,
-                    vals,
-                    failing,
-                    failed,
-                    writer,
-                    indent_name,
-                )
-            }
-        }
     }
 }
 use coverage::{ByteRangeMapping, CodeCoverageReport, Fraction};
@@ -1577,16 +1507,15 @@ impl CommandLineReporter {
         }
     }
 
-    pub(crate) fn generate_code_coverage<
-        const REPORTERS_TEXT: bool,
-        const REPORTERS_LCOV: bool,
-        const ENABLE_ANSI_COLORS: bool,
-    >(
+    pub(crate) fn generate_code_coverage(
         &mut self,
         vm: &mut VirtualMachine,
         opts: &mut CodeCoverageOptions,
+        reporters_text: bool,
+        reporters_lcov: bool,
+        enable_ansi_colors: bool,
     ) -> crate::Result<()> {
-        if !REPORTERS_TEXT && !REPORTERS_LCOV {
+        if !reporters_text && !reporters_lcov {
             return Ok(());
         }
 
@@ -1610,10 +1539,13 @@ impl CommandLineReporter {
 
         index_sort::sort_slice_by(&mut byte_ranges, coverage::is_less_than_cmp);
 
-        self.print_code_coverage::<REPORTERS_TEXT, REPORTERS_LCOV, ENABLE_ANSI_COLORS>(
+        self.print_code_coverage(
             vm,
             opts,
             &mut byte_ranges,
+            reporters_text,
+            reporters_lcov,
+            enable_ansi_colors,
         )
     }
 
@@ -1668,36 +1600,31 @@ impl CommandLineReporter {
         Some(buffered)
     }
 
-    pub(crate) fn print_code_coverage<
-        const REPORTERS_TEXT: bool,
-        const REPORTERS_LCOV: bool,
-        const ENABLE_ANSI_COLORS: bool,
-    >(
+    pub(crate) fn print_code_coverage(
         &mut self,
         vm: &mut VirtualMachine,
         opts: &mut CodeCoverageOptions,
         byte_ranges: &mut [&mut ByteRangeMapping],
+        reporters_text: bool,
+        reporters_lcov: bool,
+        enable_ansi_colors: bool,
     ) -> crate::Result<()> {
         // `perf::Ctx` ends its span on Drop.
-        let _trace = if REPORTERS_TEXT && REPORTERS_LCOV {
+        let _trace = if reporters_text && reporters_lcov {
             bun::perf::trace("TestCommand.printCodeCoverageLCovAndText")
-        } else if REPORTERS_TEXT {
+        } else if reporters_text {
             bun::perf::trace("TestCommand.printCodeCoverageText")
-        } else if REPORTERS_LCOV {
+        } else if reporters_lcov {
             bun::perf::trace("TestCommand.printCodeCoverageLCov")
         } else {
             // Unreachable by construction.
             unreachable!("No reporters enabled")
         };
 
-        if !REPORTERS_TEXT && !REPORTERS_LCOV {
-            unreachable!("No reporters enabled");
-        }
-
         let relative_dir = bun_resolver::fs::FileSystem::get().top_level_dir;
 
         // --- Text ---
-        let max_filepath_length: usize = if REPORTERS_TEXT {
+        let max_filepath_length: usize = if reporters_text {
             'brk: {
                 let mut len = b"All files".len();
                 for entry in byte_ranges.iter() {
@@ -1734,9 +1661,9 @@ impl CommandLineReporter {
         let base_fraction = opts.fractions;
         let mut failing = false;
 
-        if REPORTERS_TEXT {
+        if reporters_text {
             if console
-                .write_all(&Output::pretty_fmt::<ENABLE_ANSI_COLORS>("<r><d>"))
+                .write_all(&Output::pretty_fmt_rt("<r><d>", enable_ansi_colors))
                 .is_err()
             {
                 return Ok(());
@@ -1748,8 +1675,9 @@ impl CommandLineReporter {
                 return Ok(());
             }
             if console
-                .write_all(&Output::pretty_fmt::<ENABLE_ANSI_COLORS>(
+                .write_all(&Output::pretty_fmt_rt(
                     "|---------|---------|-------------------<r>\n",
+                    enable_ansi_colors,
                 ))
                 .is_err()
             {
@@ -1765,15 +1693,16 @@ impl CommandLineReporter {
                 return Ok(());
             }
             if console
-                .write_all(&Output::pretty_fmt::<ENABLE_ANSI_COLORS>(
+                .write_all(&Output::pretty_fmt_rt(
                     " <d>|<r> % Funcs <d>|<r> % Lines <d>|<r> Uncovered Line #s\n",
+                    enable_ansi_colors,
                 ))
                 .is_err()
             {
                 return Ok(());
             }
             if console
-                .write_all(&Output::pretty_fmt::<ENABLE_ANSI_COLORS>("<d>"))
+                .write_all(&Output::pretty_fmt_rt("<d>", enable_ansi_colors))
                 .is_err()
             {
                 return Ok(());
@@ -1785,8 +1714,9 @@ impl CommandLineReporter {
                 return Ok(());
             }
             if console
-                .write_all(&Output::pretty_fmt::<ENABLE_ANSI_COLORS>(
+                .write_all(&Output::pretty_fmt_rt(
                     "|---------|---------|-------------------<r>\n",
+                    enable_ansi_colors,
                 ))
                 .is_err()
             {
@@ -1809,7 +1739,7 @@ impl CommandLineReporter {
         // --- LCOV ---
         let mut lcov_name_buf = PathBuffer::uninit();
         let mut lcov_state: Option<(File, &bun_core::ZStr, /*buffered*/ Vec<u8>)> =
-            if REPORTERS_LCOV {
+            if reporters_lcov {
                 'brk: {
                     // Ensure the directory exists
                     let mut fs = crate::node::fs::NodeFS::default();
@@ -1877,7 +1807,7 @@ impl CommandLineReporter {
         let mut lcov_guard = scopeguard::guard(
             &mut lcov_state,
             |s: &mut Option<(File, &bun_core::ZStr, Vec<u8>)>| {
-                if REPORTERS_LCOV {
+                if reporters_lcov {
                     if let Some((file, name, _)) = s.take() {
                         let _ = file.close(); // close error is non-actionable
                         let _ = bun_sys::unlink(name);
@@ -1912,7 +1842,7 @@ impl CommandLineReporter {
                 continue;
             };
 
-            if REPORTERS_TEXT {
+            if reporters_text {
                 let mut fraction = base_fraction;
                 if coverage::Text::write_format(
                     &report,
@@ -1920,7 +1850,7 @@ impl CommandLineReporter {
                     &mut fraction,
                     relative_dir,
                     console_writer,
-                    ENABLE_ANSI_COLORS,
+                    enable_ansi_colors,
                 )
                 .is_err()
                 {
@@ -1937,7 +1867,7 @@ impl CommandLineReporter {
                 console_writer.extend_from_slice(b"\n");
             }
 
-            if REPORTERS_LCOV {
+            if reporters_lcov {
                 if let Some((_, _, buffered)) = lcov_guard.as_mut() {
                     if coverage::Lcov::write_format(&report, relative_dir, buffered).is_err() {
                         continue;
@@ -1948,7 +1878,7 @@ impl CommandLineReporter {
             drop(report);
         }
 
-        if REPORTERS_TEXT {
+        if reporters_text {
             {
                 if avg_count == 0.0 {
                     avg.functions = 0.0;
@@ -1979,14 +1909,14 @@ impl CommandLineReporter {
                     failing,
                     &mut console,
                     false,
-                    ENABLE_ANSI_COLORS,
+                    enable_ansi_colors,
                 )?;
 
-                console.write_all(&Output::pretty_fmt::<ENABLE_ANSI_COLORS>("<r><d> |<r>\n"))?;
+                console.write_all(&Output::pretty_fmt_rt("<r><d> |<r>\n", enable_ansi_colors))?;
             }
 
             console.write_all(&console_buffer)?;
-            console.write_all(&Output::pretty_fmt::<ENABLE_ANSI_COLORS>("<r><d>"))?;
+            console.write_all(&Output::pretty_fmt_rt("<r><d>", enable_ansi_colors))?;
             // Disarm the lcov cleanup guard before the early `Ok(())`; the
             // temp file is left for the OS.
             if console
@@ -1997,8 +1927,9 @@ impl CommandLineReporter {
                 return Ok(());
             }
             if console
-                .write_all(&Output::pretty_fmt::<ENABLE_ANSI_COLORS>(
+                .write_all(&Output::pretty_fmt_rt(
                     "|---------|---------|-------------------<r>\n",
+                    enable_ansi_colors,
                 ))
                 .is_err()
             {
@@ -2010,7 +1941,7 @@ impl CommandLineReporter {
             Output::flush();
         }
 
-        if REPORTERS_LCOV {
+        if reporters_lcov {
             // `try lcov_writer.flush()` — keep the errdefer guard armed across the
             // write so an error here still closes + unlinks the temp file.
             if let Some((lcov_file, _, buffered)) = &mut **lcov_guard {
@@ -2844,30 +2775,14 @@ impl TestCommand {
             pretty_error!("\n");
 
             if coverage_options.enabled && !ran_parallel {
-                // 8-way dispatch over 3 runtime bools.
-                match (
+                let reporters = coverage_options.reporters;
+                reporter.generate_code_coverage(
+                    vm,
+                    &mut coverage_options,
+                    reporters.text,
+                    reporters.lcov,
                     Output::enable_ansi_colors_stderr(),
-                    coverage_options.reporters.text,
-                    coverage_options.reporters.lcov,
-                ) {
-                    (true, true, true) => reporter
-                        .generate_code_coverage::<true, true, true>(vm, &mut coverage_options)?,
-                    (true, true, false) => reporter
-                        .generate_code_coverage::<true, false, true>(vm, &mut coverage_options)?,
-                    (true, false, true) => reporter
-                        .generate_code_coverage::<false, true, true>(vm, &mut coverage_options)?,
-                    (true, false, false) => reporter
-                        .generate_code_coverage::<false, false, true>(vm, &mut coverage_options)?,
-                    (false, true, true) => reporter
-                        .generate_code_coverage::<true, true, false>(vm, &mut coverage_options)?,
-                    (false, true, false) => reporter
-                        .generate_code_coverage::<true, false, false>(vm, &mut coverage_options)?,
-                    (false, false, true) => reporter
-                        .generate_code_coverage::<false, true, false>(vm, &mut coverage_options)?,
-                    (false, false, false) => reporter
-                        .generate_code_coverage::<false, false, false>(vm, &mut coverage_options)?,
-                }
-                // Generic param order is <TEXT, LCOV, COLORS>; the match tuple is (colors, text, lcov).
+                )?;
             }
 
             // `Summary` is `Copy`; take a value snapshot so the `&mut` from
