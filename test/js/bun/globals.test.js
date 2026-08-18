@@ -93,6 +93,53 @@ it("name", () => {
   }
 });
 
+// These classes come out of generate-classes.ts, which installs the same
+// prototype and constructor boilerplate on every class it emits.
+describe.each([
+  ["Blob", Blob, Object.prototype],
+  ["Request", Request, Object.prototype],
+  ["Response", Response, Object.prototype],
+  ["TextDecoder", TextDecoder, Object.prototype],
+  ["HTMLRewriter", HTMLRewriter, Object.prototype],
+  ["BuildMessage", BuildMessage, Error.prototype],
+  ["ResolveMessage", ResolveMessage, Error.prototype],
+  ["Transpiler", Bun.Transpiler, Object.prototype],
+  ["CryptoHasher", Bun.CryptoHasher, Object.prototype],
+  ["Glob", Bun.Glob, Object.prototype],
+])("generated class %s", (name, Class, prototypeParent) => {
+  it("prototype has a read-only, non-enumerable Symbol.toStringTag", () => {
+    expect(Object.getOwnPropertyDescriptor(Class.prototype, Symbol.toStringTag)).toEqual({
+      value: name,
+      writable: false,
+      enumerable: false,
+      configurable: true,
+    });
+  });
+
+  it("prototype chain starts at the configured base", () => {
+    expect(Object.getPrototypeOf(Class.prototype)).toBe(prototypeParent);
+  });
+
+  it("constructor.prototype is frozen in place", () => {
+    expect(Object.getOwnPropertyDescriptor(Class, "prototype")).toEqual({
+      value: Class.prototype,
+      writable: false,
+      enumerable: false,
+      configurable: false,
+    });
+  });
+
+  it("calling the constructor without new throws ERR_ILLEGAL_CONSTRUCTOR", () => {
+    expect(() => Class()).toThrow(
+      expect.objectContaining({
+        name: "TypeError",
+        code: "ERR_ILLEGAL_CONSTRUCTOR",
+        message: `${name} constructor cannot be invoked without 'new'`,
+      }),
+    );
+  });
+});
+
 describe("File", () => {
   it("constructor", () => {
     const file = new File(["foo"], "bar.txt", { type: "text/plain;charset=utf-8" });

@@ -222,3 +222,27 @@ describe("CommonJS Module cached slots are visible in heap snapshots", () => {
     expect(exitCode).toBe(0);
   });
 });
+
+describe("generated class cached slots are visible in heap snapshots", () => {
+  it("reports filled slots as property edges and skips empty ones", async () => {
+    await using proc = Bun.spawn({
+      cmd: [bunExe(), path.join(__dirname, "generated-class-heap-snapshot-fixture.js")],
+      env: bunEnv,
+      stderr: "pipe",
+    });
+
+    const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+
+    expect(stderr).toBe("");
+    const targetsByName = JSON.parse(stdout);
+    // The fixture read request.headers and request.signal, so those cached
+    // slots hold cells. The accessor targets come from Request.prototype.
+    expect(targetsByName["headers"]).toContain("Headers");
+    expect(targetsByName["signal"]).toContain("AbortSignal");
+    // request.body and request.url were never read, so only the prototype
+    // accessors show up under those names.
+    expect(targetsByName["body"]).not.toContain("ReadableStream");
+    expect(targetsByName["url"]).not.toContain("string");
+    expect(exitCode).toBe(0);
+  });
+});
