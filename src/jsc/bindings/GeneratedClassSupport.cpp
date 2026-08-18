@@ -8,9 +8,9 @@ NEVER_INLINE JSC::Structure* createClassStructure(JSC::VM& vm, JSC::JSGlobalObje
     return JSC::Structure::create(vm, globalObject, prototype, typeInfo, classInfo);
 }
 
-NEVER_INLINE JSC::Structure* createPrototypeStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::JSObject* basePrototype, const JSC::ClassInfo* classInfo)
+NEVER_INLINE JSC::Structure* createPrototypeStructure(JSC::VM& vm, JSC::JSGlobalObject* globalObject, JSC::JSValue prototype, JSC::TypeInfo typeInfo, const JSC::ClassInfo* classInfo)
 {
-    auto* structure = JSC::Structure::create(vm, globalObject, basePrototype, JSC::TypeInfo(JSC::ObjectType, JSC::JSNonFinalObject::StructureFlags), classInfo);
+    auto* structure = createClassStructure(vm, globalObject, prototype, typeInfo, classInfo);
     structure->setMayBePrototype(true);
     return structure;
 }
