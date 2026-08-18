@@ -468,8 +468,13 @@ fn parse_until_before<T, C>(
         result
     };
     parser.stop_before = saved_stop_before;
+    skip_until_delimiter(parser, delimiters);
+    result
+}
 
-    // FIXME: have a special-purpose tokenizer method for this that does less work.
+// FIXME: have a special-purpose tokenizer method for this that does less work.
+#[inline(never)]
+fn skip_until_delimiter(parser: &mut Parser, delimiters: Delimiters) {
     loop {
         if delimiters.intersects(Delimiters::from_byte(parser.input.tokenizer.next_byte())) {
             break;
@@ -483,8 +488,6 @@ fn parse_until_before<T, C>(
             _ => break,
         }
     }
-
-    result
 }
 
 pub(crate) fn parse_until_after<T, C>(
@@ -536,10 +539,15 @@ fn record_unclosed_block_at_eof(parser: &mut Parser, start_position: usize) {
     }
 }
 
-fn parse_nested_block<T>(
-    parser: &mut Parser,
-    parsefn: impl FnOnce(&mut Parser) -> CssResult<T>,
-) -> CssResult<T> {
+#[derive(Clone, Copy)]
+struct NestedBlock {
+    block_type: BlockType,
+    start_position: usize,
+    saved_stop_before: Delimiters,
+}
+
+#[inline(never)]
+fn enter_nested_block(parser: &mut Parser) -> CssResult<NestedBlock> {
     let block_type = parser.at_start_of.take().unwrap_or_else(|| {
         panic!(
             "\nA nested parser can only be created when a Function,\n\
@@ -585,16 +593,33 @@ fn parse_nested_block<T>(
     let saved_stop_before = parser.stop_before;
     parser.stop_before = closing_delimiter;
     parser.at_start_of = None;
-    let result = parser.parse_entirely((), |(), p| parsefn(p));
+    Ok(NestedBlock {
+        block_type,
+        start_position,
+        saved_stop_before,
+    })
+}
+
+#[inline(never)]
+fn exit_nested_block(parser: &mut Parser, block: NestedBlock, result_is_err: bool) {
     if let Some(block_type2) = parser.at_start_of.take() {
         consume_until_end_of_block(block_type2, &mut parser.input.tokenizer);
     }
-    parser.stop_before = saved_stop_before;
-    let found_close = consume_until_end_of_block(block_type, &mut parser.input.tokenizer);
-    if result.is_err() && !found_close {
-        record_unclosed_block_at_eof(parser, start_position);
+    parser.stop_before = block.saved_stop_before;
+    let found_close = consume_until_end_of_block(block.block_type, &mut parser.input.tokenizer);
+    if result_is_err && !found_close {
+        record_unclosed_block_at_eof(parser, block.start_position);
     }
     parser.input.nesting_depth -= 1;
+}
+
+fn parse_nested_block<T>(
+    parser: &mut Parser,
+    parsefn: impl FnOnce(&mut Parser) -> CssResult<T>,
+) -> CssResult<T> {
+    let block = enter_nested_block(parser)?;
+    let result = parser.parse_entirely((), |(), p| parsefn(p));
+    exit_nested_block(parser, block, result.is_err());
     result
 }
 
