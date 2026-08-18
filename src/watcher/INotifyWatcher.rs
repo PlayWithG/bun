@@ -182,6 +182,14 @@ impl INotifyWatcher {
         result
     }
 
+    /// Drops a watch descriptor that no watchlist entry refers to any more.
+    /// Failure means the kernel already removed it (the inode is gone).
+    pub(crate) fn unwatch(&self, wd: EventListIndex) {
+        debug_assert!(self.loaded);
+        let rc = bun_sys::linux::inotify_rm_watch(self.fd.native(), wd);
+        bun_core::scoped_log!(watcher, "inotify_rm_watch({}, {}) = {}", self.fd, wd, rc);
+    }
+
     pub(crate) fn new(_root: &[u8]) -> crate::Result<Self> {
         use bun_sys::linux::IN;
 

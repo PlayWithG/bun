@@ -1,6 +1,6 @@
 // Hot tests ensure that the `import.meta.hot` interface is functional
 import { expect } from "bun:test";
-import { renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { readdirSync, readlinkSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { devTest, emptyHtmlFile } from "../bake-harness";
 
 devTest("import.meta.hot.accept basic", {
@@ -525,6 +525,71 @@ devTest("hmr forwards every merged inotify sub-path from a directory batch", {
       }
       await c.expectMessage(`atomic ${round}`);
     }
+  },
+});
+devTest("a file replaced by an atomic save keeps being watched", {
+  // An inotify watch follows the inode, so an atomic save leaves the file's
+  // watch on the replaced inode and the re-bundle has to move it. kqueue
+  // reports NOTE_DELETE for the replaced inode at rename time, which evicts
+  // the entry before the re-bundle adds it back. Windows cannot rename over a
+  // file the dev server holds open.
+  skip: ["win32", "darwin"],
+  files: {
+    "index.html": emptyHtmlFile({
+      scripts: ["index.ts"],
+    }),
+    "index.ts": `
+      import value from "./dep";
+      console.log(value);
+      import.meta.hot.accept();
+    `,
+    "dep.ts": `
+      export default "initial";
+    `,
+  },
+  async test(dev) {
+    await using c = await dev.client("/");
+    await c.expectMessage("initial");
+
+    // Save the way editors do: write a temp file and rename it over the
+    // target. dep.ts is a new inode afterwards.
+    {
+      await using _wait = await dev.batchChanges();
+      writeFileSync(dev.join("dep.ts.tmp"), 'export default "atomic";\n');
+      renameSync(dev.join("dep.ts.tmp"), dev.join("dep.ts"));
+    }
+    await c.expectMessage("atomic");
+
+    // The re-bundle swaps the watchlist's descriptor for the replaced inode
+    // with one for the new inode. Holding the old one would pin the unlinked
+    // inode (and its watch) for the life of the server.
+    const fdDir = `/proc/${dev.devProcess.pid}/fd`;
+    const openTargets = readdirSync(fdDir).flatMap(fd => {
+      try {
+        return [readlinkSync(`${fdDir}/${fd}`)];
+      } catch {
+        // A socket or pipe closed between readdir and readlink.
+        return [];
+      }
+    });
+    expect(openTargets).not.toContain(`${dev.join("dep.ts")} (deleted)`);
+    expect(openTargets).toContain(dev.join("dep.ts"));
+
+    // Only the watch on the file itself reports a rename away from the path
+    // (the directory watch does not subscribe to IN_MOVED_FROM), so this is
+    // noticed only if the re-bundle above moved the watch to the new inode.
+    {
+      await using _wait = await dev.batchChanges({
+        errors: ['index.ts:1:19: error: Could not resolve: "./dep"'],
+      });
+      renameSync(dev.join("dep.ts"), dev.join("dep.moved.ts"));
+    }
+
+    {
+      await using _wait = await dev.batchChanges();
+      renameSync(dev.join("dep.moved.ts"), dev.join("dep.ts"));
+    }
+    await c.expectMessage("atomic");
   },
 });
 devTest("hot update frames are not delivered to application websocket topics", {

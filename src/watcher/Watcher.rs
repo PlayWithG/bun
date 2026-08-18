@@ -512,6 +512,83 @@ impl Watcher {
         let _ = bun_sys::kevent(self.platform.fd, &[event], &mut [], None);
     }
 
+    /// Registers an inotify watch on the inode `file_path` currently names.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn watch_file_path<const CLONE_FILE_PATH: bool>(
+        &mut self,
+        file_path: &[u8],
+    ) -> sys::Result<platform::EventListIndex> {
+        // inotify needs a trailing NUL. When CLONE_FILE_PATH is true the
+        // caller's `file_path` is NOT NUL-terminated, so we must copy into a
+        // NUL-terminated scratch buffer (mirrors the directory branch in
+        // `append_directory_assume_capacity`) instead of pointing at the
+        // caller's slice.
+        let mut buf = bun_paths::path_buffer_pool::get();
+        let slice: &ZStr = if CLONE_FILE_PATH {
+            buf[0..file_path.len()].copy_from_slice(file_path);
+            buf[file_path.len()] = 0;
+            // SAFETY: buf[file_path.len()] == 0 written above
+            ZStr::from_buf(&buf[..], file_path.len())
+        } else {
+            // SAFETY: when CLONE_FILE_PATH is false the caller passes a path
+            // interned in `bun.fs.FileSystem` with a NUL sentinel at [len].
+            unsafe { ZStr::from_raw(file_path.as_ptr(), file_path.len()) }
+        };
+        self.platform.watch_path(slice)
+    }
+
+    /// Moves the watch of an already listed file onto the inode its path names
+    /// now. Returns false when the entry still watches that inode.
+    ///
+    /// An inotify watch follows an inode, not a path. An atomic save (write a
+    /// temp file, `rename` it over the target) or a delete plus re-create puts
+    /// a new inode at the path, and the entry's stored fd keeps the old inode
+    /// alive, so its watch never reports `IN_DELETE_SELF` and nothing evicts
+    /// the entry. The next `add_file` for the path is when the new inode is
+    /// known to exist, so the watch is refreshed here: `inotify_add_watch`
+    /// returns the entry's own descriptor while the path still names the
+    /// watched inode, and a new one once it does not.
+    ///
+    /// Caller holds `self.mutex`; the watcher thread snapshots the
+    /// `eventlist_index` column under the same lock.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn rewatch_replaced_file<const CLONE_FILE_PATH: bool>(
+        &mut self,
+        index: usize,
+        file_path: &[u8],
+    ) -> bool {
+        {
+            let slice = self.watchlist.slice();
+            // A hash match for a different path (or a directory) is a
+            // collision; leave that entry alone.
+            if slice.items_kind()[index] != WatchItemKind::File
+                || &*slice.items_file_path()[index] != file_path
+            {
+                return false;
+            }
+        }
+        let Ok(new_index) = self.watch_file_path::<CLONE_FILE_PATH>(file_path) else {
+            return false;
+        };
+        let old_index = core::mem::replace(
+            &mut self.watchlist.items_eventlist_index_mut()[index],
+            new_index,
+        );
+        if old_index == new_index {
+            return false;
+        }
+        // Entries whose paths name the same inode (hard links, symlinks) share
+        // one descriptor, and the old inode may still be current for them.
+        if !self.watchlist.items_eventlist_index().contains(&old_index) {
+            self.platform.unwatch(old_index);
+        }
+        log!(
+            "<d>Moved the watch of <b>{}<r><d> to its new inode.<r>",
+            bstr::BStr::new(file_path)
+        );
+        true
+    }
+
     fn append_file_assume_capacity<const CLONE_FILE_PATH: bool>(
         &mut self,
         fd: Fd,
@@ -551,24 +628,7 @@ impl Watcher {
         #[cfg(any(target_os = "macos", target_os = "freebsd"))]
         self.add_file_descriptor_to_kqueue_without_checks(fd, watchlist_id);
         #[cfg(any(target_os = "linux", target_os = "android"))]
-        let eventlist_index = {
-            // inotify needs a trailing NUL. When
-            // CLONE_FILE_PATH is true the caller's `file_path` is NOT NUL-terminated,
-            // so we must copy into a NUL-terminated scratch buffer (mirrors the
-            // directory branch below) instead of pointing at the caller's slice.
-            let mut buf = bun_paths::path_buffer_pool::get();
-            let slice: &ZStr = if CLONE_FILE_PATH {
-                buf[0..file_path.len()].copy_from_slice(file_path);
-                buf[file_path.len()] = 0;
-                // SAFETY: buf[file_path.len()] == 0 written above
-                ZStr::from_buf(&buf[..], file_path.len())
-            } else {
-                // SAFETY: when CLONE_FILE_PATH is false the caller passes a path
-                // interned in `bun.fs.FileSystem` with a NUL sentinel at [len].
-                unsafe { ZStr::from_raw(file_path.as_ptr(), file_path.len()) }
-            };
-            self.platform.watch_path(slice)?
-        };
+        let eventlist_index = self.watch_file_path::<CLONE_FILE_PATH>(file_path)?;
 
         self.watchlist.append_assume_capacity(WatchItem {
             file_path: file_path_,
@@ -877,16 +937,35 @@ impl Watcher {
         self.mutex.lock();
 
         if let Some(index) = self.index_of(hash) {
+            let index = index as usize;
+            #[cfg(any(target_os = "linux", target_os = "android"))]
+            {
+                if self.rewatch_replaced_file::<CLONE_FILE_PATH>(index, file_path) {
+                    // The stored fd pins the inode that left the path; the
+                    // caller's `fd` was opened through the path and takes its place.
+                    let old_fd = core::mem::replace(&mut self.watchlist.items_fd_mut()[index], fd);
+                    if old_fd.is_valid() {
+                        let _ = bun_sys::close(old_fd);
+                    }
+                    self.mutex.unlock();
+                    return Ok(if fd.is_valid() {
+                        FdOwnership::Watcher
+                    } else {
+                        FdOwnership::Caller
+                    });
+                }
+            }
             let mut ownership = FdOwnership::Caller;
             if feature_flags::ATOMIC_FILE_WATCHER && fd.is_valid() {
                 // Upgrade a path-only entry (`add_file_by_path_slow` inserts
                 // fd-less, e.g. the `--hot` entrypoint) so `hot_reloader`'s
                 // directory-event recovery sees a valid fd. A valid stored fd
-                // is never replaced: the watchlist owns it until eviction,
-                // and the old overwrite leaked it.
+                // for the inode still at the path is never replaced: the
+                // watchlist owns it until eviction, and the old overwrite
+                // leaked it.
                 let fds = self.watchlist.items_fd_mut();
-                if !fds[index as usize].is_valid() {
-                    fds[index as usize] = fd;
+                if !fds[index].is_valid() {
+                    fds[index] = fd;
                     ownership = FdOwnership::Watcher;
                 }
             }
@@ -1090,6 +1169,8 @@ pub trait WatchItemColumns {
     fn items_kind(&self) -> &[WatchItemKind];
     #[cfg(any(target_os = "linux", target_os = "android"))]
     fn items_eventlist_index(&self) -> &[platform::EventListIndex];
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn items_eventlist_index_mut(&mut self) -> &mut [platform::EventListIndex];
 }
 
 impl WatchItemColumns for WatchList {
@@ -1115,6 +1196,10 @@ impl WatchItemColumns for WatchList {
     fn items_eventlist_index(&self) -> &[platform::EventListIndex] {
         self.items::<"eventlist_index", platform::EventListIndex>()
     }
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn items_eventlist_index_mut(&mut self) -> &mut [platform::EventListIndex] {
+        self.items_mut::<"eventlist_index", platform::EventListIndex>()
+    }
 }
 
 impl WatchItemColumns for bun_collections::multi_array_list::Slice<WatchItem> {
@@ -1139,5 +1224,9 @@ impl WatchItemColumns for bun_collections::multi_array_list::Slice<WatchItem> {
     #[cfg(any(target_os = "linux", target_os = "android"))]
     fn items_eventlist_index(&self) -> &[platform::EventListIndex] {
         self.items::<"eventlist_index", platform::EventListIndex>()
+    }
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    fn items_eventlist_index_mut(&mut self) -> &mut [platform::EventListIndex] {
+        self.items_mut::<"eventlist_index", platform::EventListIndex>()
     }
 }
