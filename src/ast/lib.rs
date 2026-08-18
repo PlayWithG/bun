@@ -2049,12 +2049,24 @@ impl Log {
         })
     }
 
-    #[cold]
+    #[inline]
     pub fn add_range_error_with_notes(
         &mut self,
         source: Option<&Source>,
         r: Range,
         text: impl IntoText,
+        notes: Box<[Data]>,
+    ) {
+        self.add_range_error_with_notes_text(source, r, text.into_text(), notes)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn add_range_error_with_notes_text(
+        &mut self,
+        source: Option<&Source>,
+        r: Range,
+        text: Cow<'static, [u8]>,
         notes: Box<[Data]>,
     ) {
         self.errors += 1;
@@ -2071,11 +2083,17 @@ impl Log {
         self.msgs.push(msg);
     }
 
+    #[inline]
+    pub fn add_error(&mut self, source: Option<&Source>, loc: Loc, text: impl IntoText) {
+        self.add_error_text(source, loc, text.into_text())
+    }
+
     #[cold]
-    pub fn add_error(&mut self, _source: Option<&Source>, loc: Loc, text: impl IntoText) {
+    #[inline(never)]
+    fn add_error_text(&mut self, source: Option<&Source>, loc: Loc, text: Cow<'static, [u8]>) {
         self.errors += 1;
         let data = self.tracked_range_data(
-            _source,
+            source,
             Range {
                 loc,
                 ..Default::default()
