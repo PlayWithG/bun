@@ -60,6 +60,27 @@ jobs:
           bun-version: "1.3.14"
           download-url: https://github.com/oven-sh/bun/releases/download
 
+      - name: Link NDK compiler runtimes into host Clang
+        run: |
+          RESOURCE_DIR=$(clang -print-resource-dir)
+          BUILTINS=$(find "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64" \
+            -name 'libclang_rt.builtins-aarch64-android.a' -type f -print -quit)
+          LIBUNWIND=$(find "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64" \
+            -path '*/lib/linux/aarch64/libunwind.a' -type f -print -quit)
+          test -n "$BUILTINS"
+          test -n "$LIBUNWIND"
+          sudo mkdir -p \
+            "$RESOURCE_DIR/lib/aarch64-unknown-linux-android28" \
+            "$RESOURCE_DIR/lib/linux/aarch64"
+          sudo ln -sf "$BUILTINS" \
+            "$RESOURCE_DIR/lib/aarch64-unknown-linux-android28/libclang_rt.builtins.a"
+          sudo ln -sf "$LIBUNWIND" "$RESOURCE_DIR/lib/aarch64-unknown-linux-android28/libunwind.a"
+          sudo ln -sf "$BUILTINS" "$RESOURCE_DIR/lib/linux/libclang_rt.builtins-aarch64-android.a"
+          sudo ln -sf "$LIBUNWIND" "$RESOURCE_DIR/lib/linux/aarch64/libunwind.a"
+          ls -l \
+            "$RESOURCE_DIR/lib/aarch64-unknown-linux-android28" \
+            "$RESOURCE_DIR/lib/linux/aarch64"
+
       - name: Install workspace dependencies
         run: bun install --frozen-lockfile
 
