@@ -10,6 +10,7 @@
 #include "JSX509Certificate.h"
 #include "JSX509CertificatePrototype.h"
 #include "ZigGlobalObject.h"
+#include "wtf/ASCIICType.h"
 #include "wtf/Assertions.h"
 #include "wtf/SharedTask.h"
 #include "wtf/text/ASCIILiteral.h"
@@ -45,11 +46,34 @@ WTF::String toWTFString(ncrypto::BIOPointer& bio)
 {
     BUF_MEM* bptr;
     BIO_get_mem_ptr(bio.get(), &bptr);
+    if (bptr->length == 0) {
+        return emptyString();
+    }
     std::span<const char> span(bptr->data, bptr->length);
     if (simdutf::validate_ascii(span.data(), span.size())) {
         return toExternalStringImpl(bio, span);
     }
     return WTF::String::fromUTF8({ reinterpret_cast<const Latin1Character*>(bptr->data), bptr->length });
+}
+
+// BoringSSL's BN_bn2hex/BN_print emit lowercase hex; OpenSSL (and therefore
+// Node.js) emits uppercase. The input is always ASCII hex, so uppercase it
+// while building the string in a single allocation rather than creating the
+// lowercase string first and then allocating a second uppercased copy.
+static WTF::String toUppercaseASCIIWTFString(std::span<const char> span)
+{
+    std::span<Latin1Character> buffer;
+    auto string = WTF::String::createUninitialized(span.size(), buffer);
+    for (size_t i = 0; i < span.size(); ++i)
+        buffer[i] = WTF::toASCIIUpper(static_cast<Latin1Character>(span[i]));
+    return string;
+}
+
+static WTF::String toUppercaseASCIIWTFString(ncrypto::BIOPointer& bio)
+{
+    BUF_MEM* bptr;
+    BIO_get_mem_ptr(bio.get(), &bptr);
+    return toUppercaseASCIIWTFString(std::span<const char>(bptr->data, bptr->length));
 }
 
 static JSC_DECLARE_HOST_FUNCTION(x509CertificateConstructorCall);
@@ -229,14 +253,6 @@ void JSX509Certificate::finishCreation(VM& vm)
         init.property.setMayBeNull(init.owner->vm(), init.owner, init.owner->computeRaw(init.owner->view(), init.owner->globalObject()));
     });
 
-    m_infoAccess.initLater([](const JSC::LazyProperty<JSX509Certificate, JSString>::Initializer& init) {
-        JSValue value = init.owner->computeInfoAccess(init.owner->view(), init.owner->globalObject(), false);
-        if (value.isString()) {
-            init.set(value.toString(init.owner->globalObject()));
-        } else {
-            init.property.setMayBeNull(init.owner->vm(), init.owner, nullptr);
-        }
-    });
     m_subjectAltName.initLater([](const JSC::LazyProperty<JSX509Certificate, JSString>::Initializer& init) {
         init.property.setMayBeNull(init.owner->vm(), init.owner, init.owner->computeSubjectAltName(init.owner->view(), init.owner->globalObject()));
     });
@@ -313,7 +329,6 @@ void JSX509Certificate::visitChildrenImpl(JSCell* cell, Visitor& visitor)
     thisObject->m_fingerprint256.visit(visitor);
     thisObject->m_fingerprint512.visit(visitor);
     thisObject->m_raw.visit(visitor);
-    thisObject->m_infoAccess.visit(visitor);
     thisObject->m_subjectAltName.visit(visitor);
     thisObject->m_publicKey.visit(visitor);
     visitor.reportExtraMemoryVisited(thisObject->m_extraMemorySizeForGC);
@@ -510,7 +525,7 @@ JSString* JSX509Certificate::computeSerialNumber(ncrypto::X509View view, JSGloba
         return jsEmptyString(vm);
     }
 
-    return jsString(vm, String::fromUTF8(std::span(static_cast<const char*>(serial.get()), serial.size())));
+    return jsString(vm, toUppercaseASCIIWTFString(std::span(static_cast<const char*>(serial.get()), serial.size())));
 }
 
 JSString* JSX509Certificate::computeFingerprint(ncrypto::X509View view, JSGlobalObject* globalObject)
@@ -602,12 +617,12 @@ static bool handleMatchResult(JSGlobalObject* globalObject, ASCIILiteral errorMe
     }
 }
 
-bool JSX509Certificate::checkHost(JSGlobalObject* globalObject, std::span<const char> name, uint32_t flags)
+bool JSX509Certificate::checkHost(JSGlobalObject* globalObject, std::span<const char> name, uint32_t flags, ncrypto::DataPointer* peerName)
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
 
-    auto result = view().checkHost(name, flags);
+    auto result = view().checkHost(name, flags, peerName);
     return handleMatchResult(globalObject, "Invalid name"_s, scope, result);
 }
 
@@ -676,10 +691,6 @@ JSUint8Array* JSX509Certificate::raw()
 {
     return m_raw.get(this);
 }
-JSString* JSX509Certificate::infoAccess()
-{
-    return m_infoAccess.get(this);
-}
 JSString* JSX509Certificate::subjectAltName()
 {
     return m_subjectAltName.get(this);
@@ -732,11 +743,14 @@ JSC::JSObject* JSX509Certificate::toLegacyObject(ncrypto::X509View view, JSGloba
     RETURN_IF_EXCEPTION(scope, nullptr);
 
     // Set subjectaltname
-    object->putDirect(vm, Identifier::fromString(vm, "subjectaltname"_s), valueOrUndefined(computeSubjectAltName(view, globalObject)));
+    {
+        JSString* san = computeSubjectAltName(view, globalObject);
+        object->putDirect(vm, Identifier::fromString(vm, "subjectaltname"_s), san ? JSValue(san) : jsUndefined());
+    }
     RETURN_IF_EXCEPTION(scope, nullptr);
 
     // Set infoAccess
-    object->putDirect(vm, Identifier::fromString(vm, "infoAccess"_s), valueOrUndefined(computeInfoAccess(view, globalObject, true)));
+    object->putDirect(vm, Identifier::fromString(vm, "infoAccess"_s), valueOrUndefined(computeInfoAccess(view, globalObject)));
     RETURN_IF_EXCEPTION(scope, nullptr);
 
     // Set modulus and exponent for RSA keys
@@ -753,17 +767,22 @@ JSC::JSObject* JSX509Certificate::toLegacyObject(ncrypto::X509View view, JSGloba
                 // Convert modulus to string
                 auto bio = ncrypto::BIOPointer::New(n);
                 if (bio) {
-                    object->putDirect(vm, Identifier::fromString(vm, "modulus"_s), jsString(vm, toWTFString(bio)));
+                    object->putDirect(vm, Identifier::fromString(vm, "modulus"_s), jsString(vm, toUppercaseASCIIWTFString(bio)));
                     RETURN_IF_EXCEPTION(scope, nullptr);
                 }
 
-                // Convert exponent to string
-                uint64_t exponent_word = static_cast<uint64_t>(ncrypto::BignumPointer::GetWord(e));
-                auto bio_e = ncrypto::BIOPointer::NewMem();
-                if (bio_e) {
-                    BIO_printf(bio_e.get(), "0x%" PRIx64, exponent_word);
-                    object->putDirect(vm, Identifier::fromString(vm, "exponent"_s), jsString(vm, toWTFString(bio_e)));
-                    RETURN_IF_EXCEPTION(scope, nullptr);
+                // Convert exponent to string. Node.js reports null when the
+                // exponent is too wide for a BIGNUM word.
+                auto exponent_word = ncrypto::BignumPointer::GetWord(e);
+                if (!exponent_word.has_value()) {
+                    object->putDirect(vm, Identifier::fromString(vm, "exponent"_s), jsNull());
+                } else {
+                    auto bio_e = ncrypto::BIOPointer::NewMem();
+                    if (bio_e) {
+                        BIO_printf(bio_e.get(), "0x%" PRIx64, static_cast<uint64_t>(*exponent_word));
+                        object->putDirect(vm, Identifier::fromString(vm, "exponent"_s), jsString(vm, toWTFString(bio_e)));
+                        RETURN_IF_EXCEPTION(scope, nullptr);
+                    }
                 }
 
                 // Set bits
@@ -901,11 +920,14 @@ JSC::JSObject* JSX509Certificate::toLegacyObject(JSGlobalObject* globalObject)
     RETURN_IF_EXCEPTION(scope, nullptr);
 
     // Set subjectaltname
-    object->putDirect(vm, Identifier::fromString(vm, "subjectaltname"_s), valueOrUndefined(subjectAltName()));
+    {
+        JSString* san = subjectAltName();
+        object->putDirect(vm, Identifier::fromString(vm, "subjectaltname"_s), san ? JSValue(san) : jsUndefined());
+    }
     RETURN_IF_EXCEPTION(scope, nullptr);
 
     // Set infoAccess
-    object->putDirect(vm, Identifier::fromString(vm, "infoAccess"_s), valueOrUndefined(computeInfoAccess(view(), globalObject, true)));
+    object->putDirect(vm, Identifier::fromString(vm, "infoAccess"_s), valueOrUndefined(computeInfoAccess(view(), globalObject)));
     RETURN_IF_EXCEPTION(scope, nullptr);
 
     // Set modulus and exponent for RSA keys
@@ -922,17 +944,22 @@ JSC::JSObject* JSX509Certificate::toLegacyObject(JSGlobalObject* globalObject)
                 // Convert modulus to string
                 auto bio = ncrypto::BIOPointer::New(n);
                 if (bio) {
-                    object->putDirect(vm, Identifier::fromString(vm, "modulus"_s), jsString(vm, toWTFString(bio)));
+                    object->putDirect(vm, Identifier::fromString(vm, "modulus"_s), jsString(vm, toUppercaseASCIIWTFString(bio)));
                     RETURN_IF_EXCEPTION(scope, nullptr);
                 }
 
-                // Convert exponent to string
-                uint64_t exponent_word = static_cast<uint64_t>(ncrypto::BignumPointer::GetWord(e));
-                auto bio_e = ncrypto::BIOPointer::NewMem();
-                if (bio_e) {
-                    BIO_printf(bio_e.get(), "0x%" PRIx64, exponent_word);
-                    object->putDirect(vm, Identifier::fromString(vm, "exponent"_s), jsString(vm, toWTFString(bio_e)));
-                    RETURN_IF_EXCEPTION(scope, nullptr);
+                // Convert exponent to string. Node.js reports null when the
+                // exponent is too wide for a BIGNUM word.
+                auto exponent_word = ncrypto::BignumPointer::GetWord(e);
+                if (!exponent_word.has_value()) {
+                    object->putDirect(vm, Identifier::fromString(vm, "exponent"_s), jsNull());
+                } else {
+                    auto bio_e = ncrypto::BIOPointer::NewMem();
+                    if (bio_e) {
+                        BIO_printf(bio_e.get(), "0x%" PRIx64, static_cast<uint64_t>(*exponent_word));
+                        object->putDirect(vm, Identifier::fromString(vm, "exponent"_s), jsString(vm, toWTFString(bio_e)));
+                        RETURN_IF_EXCEPTION(scope, nullptr);
+                    }
                 }
 
                 // Set bits
@@ -1054,7 +1081,7 @@ JSValue JSX509Certificate::computePublicKey(ncrypto::X509View view, JSGlobalObje
     return JSPublicKeyObject::create(vm, globalObject->m_JSPublicKeyObjectClassStructure.get(lexicalGlobalObject), lexicalGlobalObject, WTF::move(handle));
 }
 
-JSValue JSX509Certificate::computeInfoAccess(ncrypto::X509View view, JSGlobalObject* globalObject, bool legacy)
+JSValue JSX509Certificate::computeInfoAccess(ncrypto::X509View view, JSGlobalObject* globalObject)
 {
     VM& vm = globalObject->vm();
     auto scope = DECLARE_THROW_SCOPE(vm);
@@ -1064,9 +1091,6 @@ JSValue JSX509Certificate::computeInfoAccess(ncrypto::X509View view, JSGlobalObj
         return jsEmptyString(vm);
     }
     String info = toWTFString(bio);
-    if (!legacy) {
-        return jsString(vm, info);
-    }
 
     // InfoAccess is always an array, even when a single element is present.
     JSObject* object = constructEmptyObject(vm, globalObject->nullPrototypeObjectStructure());
@@ -1116,7 +1140,7 @@ JSString* JSX509Certificate::computeSubjectAltName(ncrypto::X509View view, JSGlo
 
     auto bio = view.getSubjectAltName();
     if (!bio) {
-        return jsEmptyString(vm);
+        return nullptr;
     }
 
     return jsString(vm, toWTFString(bio));

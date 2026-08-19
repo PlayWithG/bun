@@ -10,7 +10,6 @@
 #include "JSDOMConstructor.h"
 #include "JSDOMConvertBase.h"
 #include "JSDOMConvertBoolean.h"
-#include "JSDOMConvertDate.h"
 #include "JSDOMConvertInterface.h"
 #include "JSDOMConvertNullable.h"
 #include "JSDOMConvertRecord.h"
@@ -151,8 +150,11 @@ template<> JSC::EncodedJSValue JSC_HOST_CALL_ATTRIBUTES JSCookieMapDOMConstructo
             }
             init = WTF::move(seqSeq);
         } else {
-            // Handle as record<USVString, USVString>
-            HashMap<String, String> record;
+            // Handle as record<USVString, USVString>. Build a sequence so the
+            // CookieMap preserves insertion order — going through HashMap would
+            // scramble it (and the hash order itself shifted when WTF moved
+            // its string hash to RapidHash).
+            Vector<Vector<String>> seqSeq;
 
             PropertyNameArrayBuilder propertyNames(vm, PropertyNameMode::Strings, PrivateSymbolMode::Exclude);
             JSObject::getOwnPropertyNames(object, lexicalGlobalObject, propertyNames, DontEnumPropertiesMode::Include);
@@ -165,9 +167,12 @@ template<> JSC::EncodedJSValue JSC_HOST_CALL_ATTRIBUTES JSCookieMapDOMConstructo
                 auto valueStr = value.toString(lexicalGlobalObject)->value(lexicalGlobalObject);
                 RETURN_IF_EXCEPTION(throwScope, {});
 
-                record.set(propertyName.string(), valueStr);
+                Vector<String> pair;
+                pair.append(propertyName.string());
+                pair.append(WTF::move(valueStr));
+                seqSeq.append(WTF::move(pair));
             }
-            init = WTF::move(record);
+            init = WTF::move(seqSeq);
         }
     } else {
         throwTypeError(lexicalGlobalObject, throwScope, "Invalid initializer type"_s);
@@ -571,6 +576,9 @@ private:
     {
     }
 };
+template<> struct DOMStructureSlotOf<CookieMapIterator> {
+    static constexpr DOMStructureSlot value = DOMStructureSlot::CookieMapIterator;
+};
 
 using CookieMapIteratorPrototype = JSDOMIteratorPrototype<JSCookieMap, CookieMapIteratorTraits>;
 JSC_ANNOTATE_HOST_FUNCTION(CookieMapIteratorPrototypeNext, CookieMapIteratorPrototype::next);
@@ -637,21 +645,6 @@ void JSCookieMap::analyzeHeap(JSCell* cell, HeapAnalyzer& analyzer)
     auto* thisObject = uncheckedDowncast<JSCookieMap>(cell);
     analyzer.setWrappedObjectForCell(cell, &thisObject->wrapped());
     Base::analyzeHeap(cell, analyzer);
-}
-
-bool JSCookieMapOwner::isReachableFromOpaqueRoots(JSC::Handle<JSC::Unknown> handle, void*, AbstractSlotVisitor& visitor, ASCIILiteral* reason)
-{
-    UNUSED_PARAM(handle);
-    UNUSED_PARAM(visitor);
-    UNUSED_PARAM(reason);
-    return false;
-}
-
-void JSCookieMapOwner::finalize(JSC::Handle<JSC::Unknown> handle, void* context)
-{
-    auto* jsCookieMap = static_cast<JSCookieMap*>(handle.slot()->asCell());
-    auto& world = *static_cast<DOMWrapperWorld*>(context);
-    uncacheWrapper(world, &jsCookieMap->wrapped(), jsCookieMap);
 }
 
 JSC::JSValue toJSNewlyCreated(JSC::JSGlobalObject*, JSDOMGlobalObject* globalObject, Ref<CookieMap>&& impl)

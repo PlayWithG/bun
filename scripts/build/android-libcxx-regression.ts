@@ -146,7 +146,7 @@ async function resolveScenario(root: string, arch: "aarch64" | "x86_64", withSta
     toolchain(compiler, scenarioRoot),
   );
 
-  return { cfg, libcxxDir, prefix };
+  return { cfg, androidNdk, libcxxDir, prefix };
 }
 
 async function assertMissingRuntime(root: string): Promise<void> {
@@ -162,7 +162,7 @@ async function assertMissingRuntime(root: string): Promise<void> {
           os: "linux",
           arch: "aarch64",
           abi: "android",
-          androidNdk: scenario.cfg.androidNdk!,
+          androidNdk: scenario.androidNdk,
           buildDir: join(scenarioRoot, "build"),
           cacheDir: join(scenarioRoot, "cache"),
           canary: false,
@@ -178,7 +178,7 @@ async function assertMissingRuntime(root: string): Promise<void> {
 
 function assertNoAbsoluteBuildPathInRuntimeRpath(flags: string[], cfg: Config): void {
   const runtimeRpaths = flags.filter(flag => flag.includes("-Wl,-rpath,"));
-  assert(runtimeRpaths.every(flag => !flag.includes(cfg.androidNdk!)));
+  assert(runtimeRpaths.every(flag => !flag.includes(cfg.sysroot!)));
   assert(runtimeRpaths.every(flag => !flag.includes(cfg.buildDir)));
 }
 
@@ -211,6 +211,7 @@ function toolchain(compiler: string, root: string): Toolchain {
 
 interface Scenario {
   cfg: Config;
+  androidNdk: string;
   libcxxDir: string;
   prefix: string;
 }

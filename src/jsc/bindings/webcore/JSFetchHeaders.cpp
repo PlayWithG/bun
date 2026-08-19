@@ -21,7 +21,6 @@
 #include "config.h"
 #include "JSFetchHeaders.h"
 
-#include "ActiveDOMObject.h"
 #include "ExtendedDOMClientIsoSubspaces.h"
 #include "ExtendedDOMIsoSubspaces.h"
 #include "IDLTypes.h"
@@ -553,6 +552,9 @@ private:
     {
     }
 };
+template<> struct DOMStructureSlotOf<FetchHeadersIterator> {
+    static constexpr DOMStructureSlot value = DOMStructureSlot::FetchHeadersIterator;
+};
 
 using FetchHeadersIteratorPrototype = JSDOMIteratorPrototype<JSFetchHeaders, FetchHeadersIteratorTraits>;
 JSC_ANNOTATE_HOST_FUNCTION(FetchHeadersIteratorPrototypeNext, FetchHeadersIteratorPrototype::next);
@@ -597,10 +599,18 @@ JSC_DEFINE_HOST_FUNCTION(jsFetchHeaders_getRawKeys, (JSC::JSGlobalObject * lexic
     }
 
     FetchHeaders& headers = thisObject->wrapped();
-    JSArray* outArray = JSC::JSArray::create(vm, lexicalGlobalObject->arrayStructureForIndexingTypeDuringAllocation(JSC::ArrayWithContiguous), headers.size());
+    // HTTPHeaderMap's iterator covers only the common and uncommon segments;
+    // set-cookie values live in their own segment, so size() (which counts
+    // every cookie) used to leave trailing holes in the array. Size for one
+    // entry per unique name and append "set-cookie" explicitly.
+    JSArray* outArray = JSC::JSArray::create(vm, lexicalGlobalObject->arrayStructureForIndexingTypeDuringAllocation(JSC::ArrayWithContiguous), headers.sizeAfterJoiningSetCookieHeader());
 
-    for (unsigned int i = 0; const auto& header : headers.internalHeaders()) {
+    unsigned int i = 0;
+    for (const auto& header : headers.internalHeaders()) {
         outArray->putDirectIndex(lexicalGlobalObject, i++, jsString(vm, header.name()));
+    }
+    if (!headers.internalHeaders().getSetCookieHeaders().isEmpty()) {
+        outArray->putDirectIndex(lexicalGlobalObject, i++, jsString(vm, WTF::httpHeaderNameDefaultCaseStringImpl(HTTPHeaderName::SetCookie)));
     }
 
     RELEASE_AND_RETURN(scope, JSValue::encode(outArray));
@@ -696,19 +706,11 @@ JSC::JSValue getInternalProperties(JSC::VM& vm, JSGlobalObject* lexicalGlobalObj
         for (const auto& it : vec) {
             const auto& name = it.key;
             const auto& value = it.value;
-            obj->putDirectMayBeIndex(lexicalGlobalObject, Identifier::fromString(vm, name.convertToASCIILowercase()), jsString(vm, value));
+            obj->putDirectMayBeIndex(lexicalGlobalObject, Identifier::fromString(vm, lowercaseHeaderName(name)), jsString(vm, value));
         }
     }
 
     RELEASE_AND_RETURN(throwScope, obj);
-}
-
-bool JSFetchHeadersOwner::isReachableFromOpaqueRoots(JSC::Handle<JSC::Unknown> handle, void*, AbstractSlotVisitor& visitor, ASCIILiteral* reason)
-{
-    UNUSED_PARAM(handle);
-    UNUSED_PARAM(visitor);
-    UNUSED_PARAM(reason);
-    return false;
 }
 
 template<typename Visitor>
@@ -721,13 +723,6 @@ void JSFetchHeaders::visitChildrenImpl(JSCell* cell, Visitor& visitor)
 }
 
 DEFINE_VISIT_CHILDREN(JSFetchHeaders);
-
-void JSFetchHeadersOwner::finalize(JSC::Handle<JSC::Unknown> handle, void* context)
-{
-    auto* jsFetchHeaders = static_cast<JSFetchHeaders*>(handle.slot()->asCell());
-    auto& world = *static_cast<DOMWrapperWorld*>(context);
-    uncacheWrapper(world, &jsFetchHeaders->wrapped(), jsFetchHeaders);
-}
 
 #if ENABLE(BINDING_INTEGRITY)
 #if PLATFORM(WIN)

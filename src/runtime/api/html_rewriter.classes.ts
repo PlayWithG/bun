@@ -3,6 +3,8 @@ import { define } from "../../codegen/class-definitions";
 export default [
   define({
     name: "HTMLRewriter",
+    // R-2 Phase 2: user impls take `&self`; emit `this: &T` shims.
+    sharedThis: true,
     construct: true,
     finalize: true,
     JSType: "0b11101110",
@@ -25,6 +27,8 @@ export default [
   }),
   define({
     name: "TextChunk",
+    // R-2 Phase 2: user impls take `&self`; emit `this: &T` shims.
+    sharedThis: true,
     construct: true,
     finalize: true,
     JSType: "0b11101110",
@@ -62,6 +66,8 @@ export default [
   }),
   define({
     name: "DocType",
+    // R-2 Phase 2: user impls take `&self`; emit `this: &T` shims.
+    sharedThis: true,
     construct: true,
     finalize: true,
     JSType: "0b11101110",
@@ -92,6 +98,8 @@ export default [
   }),
   define({
     name: "DocEnd",
+    // R-2 Phase 2: user impls take `&self`; emit `this: &T` shims.
+    sharedThis: true,
     construct: true,
     finalize: true,
     JSType: "0b11101110",
@@ -107,6 +115,8 @@ export default [
   }),
   define({
     name: "Comment",
+    // R-2 Phase 2: user impls take `&self`; emit `this: &T` shims.
+    sharedThis: true,
     construct: true,
     finalize: true,
     JSType: "0b11101110",
@@ -141,6 +151,8 @@ export default [
   }),
   define({
     name: "EndTag",
+    // R-2 Phase 2: user impls take `&self`; emit `this: &T` shims.
+    sharedThis: true,
     construct: true,
     finalize: true,
     JSType: "0b11101110",
@@ -168,6 +180,8 @@ export default [
   }),
   define({
     name: "AttributeIterator",
+    // R-2 Phase 2: user impls take `&self`; emit `this: &T` shims.
+    sharedThis: true,
     construct: true,
     finalize: true,
     JSType: "0b11101110",
@@ -187,6 +201,8 @@ export default [
   }),
   define({
     name: "Element",
+    // R-2 Phase 2: user impls take `&self`; emit `this: &T` shims.
+    sharedThis: true,
     construct: true,
     finalize: true,
     JSType: "0b11101110",
@@ -272,5 +288,20 @@ export default [
         getter: "getAttributes",
       },
     },
+  }),
+  // Not user-visible. One per `transform()` call; the output Response roots it
+  // via its `values: [..., "transform"]` slot, and it is the `.then()` context
+  // for a suspended handler's promise. Its finalizer owns the native
+  // `RewriterPipe` box and the boxed lol-html rewriter.
+  define({
+    name: "HTMLRewriterTransform",
+    construct: false,
+    noConstructor: true,
+    finalize: true,
+    klass: {},
+    proto: {},
+    // WriteBarrier slots: everything the pipe must keep reachable and that
+    // would otherwise need a StrongOptional root.
+    values: ["response", "inputStream", "outputStream", "pendingPromise", "handlerError", "suspensionPromise"],
   }),
 ];

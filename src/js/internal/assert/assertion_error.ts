@@ -1,5 +1,6 @@
 "use strict";
 
+const { SafeSet } = require("internal/primordials");
 const { inspect } = require("internal/util/inspect");
 const colors = require("internal/util/colors");
 const { validateObject } = require("internal/validators");
@@ -46,10 +47,13 @@ const kReadableOperator = {
   notDeepEqual: 'Expected "actual" not to be loosely deep-equal to:',
   notIdentical: "Values have same structure but are not reference-equal:",
   notDeepEqualUnequal: "Expected values not to be loosely deep-equal:",
+  partialDeepStrictEqual: "Expected values to be partially and strictly deep-equal:",
 };
 
 const kMaxShortStringLength = 12;
 const kMaxLongStringLength = 512;
+
+const kMethodsWithCustomMessageDiff = new SafeSet(["deepStrictEqual", "strictEqual", "partialDeepStrictEqual"]);
 
 function copyError(source) {
   const target = ObjectAssign({ __proto__: ObjectGetPrototypeOf(source) }, source);
@@ -166,7 +170,11 @@ function getSimpleDiff(originalActual, actual: string, originalExpected, expecte
   const isStringComparison = typeof originalActual === "string" && typeof originalExpected === "string";
   // colored myers diff
   if (isStringComparison && colors.hasColors) {
-    return getColoredMyersDiff(actual, expected);
+    try {
+      return getColoredMyersDiff(actual, expected);
+    } catch {
+      return getStackedDiff(actual, expected);
+    }
   }
 
   return getStackedDiff(actual, expected);
@@ -180,7 +188,7 @@ function isSimpleDiff(actual, inspectedActual, expected, inspectedExpected) {
   return typeof actual !== "object" || actual === null || typeof expected !== "object" || expected === null;
 }
 
-function createErrDiff(actual, expected, operator, customMessage) {
+function createErrDiff(actual, expected, operator, customMessage, diffType = "simple") {
   operator = checkOperator(actual, expected, operator);
 
   let skipped = false;
@@ -195,8 +203,9 @@ function createErrDiff(actual, expected, operator, customMessage) {
   if (showSimpleDiff) {
     const simpleDiff = getSimpleDiff(actual, inspectedSplitActual[0], expected, inspectedSplitExpected[0]);
     message = simpleDiff.message;
-    if (typeof simpleDiff.header !== "undefined") {
-      header = simpleDiff.header;
+    const simpleHeader = simpleDiff.header;
+    if (typeof simpleHeader !== "undefined") {
+      header = simpleHeader;
     }
     if (simpleDiff.skipped) {
       skipped = true;
@@ -204,7 +213,7 @@ function createErrDiff(actual, expected, operator, customMessage) {
   } else if (inspectedActual === inspectedExpected) {
     // Handles the case where the objects are structurally the same but different references
     operator = "notIdentical";
-    if (inspectedSplitActual.length > 50) {
+    if (inspectedSplitActual.length > 50 && diffType !== "full") {
       message = `${ArrayPrototypeJoin.$call(ArrayPrototypeSlice.$call(inspectedSplitActual, 0, 50), "\n")}\n...}`;
       skipped = true;
     } else {
@@ -213,13 +222,24 @@ function createErrDiff(actual, expected, operator, customMessage) {
     header = "";
   } else {
     const checkCommaDisparity = actual != null && typeof actual === "object";
-    const diff = myersDiff(inspectedActual, inspectedExpected, checkCommaDisparity, true);
+    let myersDiffMessage;
+    try {
+      const diff = myersDiff(inspectedActual, inspectedExpected, checkCommaDisparity, true);
+      myersDiffMessage = printMyersDiff(diff);
+    } catch {
+      myersDiffMessage = undefined;
+    }
 
-    const myersDiffMessage = printMyersDiff(diff);
-    message = myersDiffMessage.message;
-
-    if (myersDiffMessage.skipped) {
+    if (myersDiffMessage === undefined) {
+      message = `${ArrayPrototypeJoin.$call(ArrayPrototypeSlice.$call(inspectedSplitActual, 0, 50), "\n")}\n...`;
+      header = "";
       skipped = true;
+    } else {
+      message = myersDiffMessage.message;
+
+      if (myersDiffMessage.skipped) {
+        skipped = true;
+      }
     }
   }
 
@@ -255,6 +275,7 @@ class AssertionError extends Error {
       details,
       // Compatibility with older versions.
       stackStartFunction,
+      diff = "simple",
     } = options;
     let { actual, expected } = options;
 
@@ -263,8 +284,8 @@ class AssertionError extends Error {
     Error.stackTraceLimit = 0;
 
     if (message != null) {
-      if (operator === "deepStrictEqual" || operator === "strictEqual") {
-        super(createErrDiff(actual, expected, operator, message));
+      if (kMethodsWithCustomMessageDiff.has(operator)) {
+        super(createErrDiff(actual, expected, operator, message, diff));
       } else {
         super(String(message));
       }
@@ -289,8 +310,8 @@ class AssertionError extends Error {
         expected = copyError(expected);
       }
 
-      if (operator === "deepStrictEqual" || operator === "strictEqual") {
-        super(createErrDiff(actual, expected, operator, message));
+      if (kMethodsWithCustomMessageDiff.has(operator)) {
+        super(createErrDiff(actual, expected, operator, message, diff));
       } else if (operator === "notDeepStrictEqual" || operator === "notStrictEqual") {
         // In case the objects are equal but the operator requires unequal, show
         // the first object and say A equals B
@@ -307,8 +328,8 @@ class AssertionError extends Error {
         }
 
         // Only remove lines in case it makes sense to collapse those.
-        // TODO: Accept env to always show the full error.
-        if (res.length > 50) {
+        const resLength = res.length;
+        if (resLength > 50 && diff !== "full") {
           res[46] = `${colors.blue}...${colors.white}`;
           while (res.length > 47) {
             ArrayPrototypePop.$call(res);
@@ -327,15 +348,15 @@ class AssertionError extends Error {
         const knownOperator = kReadableOperator[operator];
         if (operator === "notDeepEqual" && res === other) {
           res = `${knownOperator}\n\n${res}`;
-          if (res.length > 1024) {
+          if (res.length > 1024 && diff !== "full") {
             res = `${StringPrototypeSlice.$call(res, 0, 1021)}...`;
           }
           super(res);
         } else {
-          if (res.length > kMaxLongStringLength) {
+          if (res.length > kMaxLongStringLength && diff !== "full") {
             res = `${StringPrototypeSlice.$call(res, 0, 509)}...`;
           }
-          if (other.length > kMaxLongStringLength) {
+          if (other.length > kMaxLongStringLength && diff !== "full") {
             other = `${StringPrototypeSlice.$call(other, 0, 509)}...`;
           }
           if (operator === "deepEqual") {
@@ -392,6 +413,7 @@ class AssertionError extends Error {
     this.stack; // eslint-disable-line no-unused-expressions
     // Reset the name.
     this.name = "AssertionError";
+    this.diff = diff;
   }
 
   toString() {

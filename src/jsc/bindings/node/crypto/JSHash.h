@@ -25,6 +25,7 @@ public:
     static JSHash* create(JSC::VM& vm, JSC::Structure* structure);
 
     DECLARE_INFO;
+    DECLARE_VISIT_CHILDREN;
 
     template<typename, JSC::SubspaceAccess mode>
     static JSC::GCClient::IsoSubspace* subspaceFor(JSC::VM& vm);
@@ -49,9 +50,8 @@ public:
     ByteSource m_digest;
     bool m_finalized { false };
 
-    Vector<uint8_t, EVP_MAX_MD_SIZE> m_digestBuffer;
-
     ExternZigHash::Hasher* m_zigHasher { nullptr };
+    size_t m_sizeForGC { 0 };
 };
 
 class JSHashPrototype final : public JSC::JSNonFinalObject {

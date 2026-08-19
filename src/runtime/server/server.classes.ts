@@ -3,6 +3,9 @@ import { define } from "../../codegen/class-definitions";
 function generate(name) {
   return define({
     name,
+    // R-2 Phase 3 opt-out: `Server<SSL, DEBUG>` host-fns still take
+    // `&mut self`. Remove once the server impl is Cell/JsCell-migrated.
+    sharedThis: false,
     memoryCost: true,
     proto: {
       fetch: {
@@ -87,7 +90,21 @@ function generate(name) {
     finalize: true,
     construct: true,
     noConstructor: true,
-    values: ["routeList"],
+    values: [
+      "routeList",
+      "onRequest",
+      "onError",
+      "onNodeHTTPRequest",
+      "onClientError",
+      "onConnection",
+      "wsOnOpen",
+      "wsOnMessage",
+      "wsOnClose",
+      "wsOnDrain",
+      "wsOnError",
+      "wsOnPing",
+      "wsOnPong",
+    ],
   });
 }
 export default [
@@ -98,6 +115,8 @@ export default [
 
   define({
     name: "NodeHTTPResponse",
+    // R-2 Phase 2: user impls take `&self`; emit `this: &T` shims.
+    sharedThis: true,
     JSType: "0b11101110",
     proto: {
       writeHead: {
@@ -106,6 +125,10 @@ export default [
       },
       writeContinue: {
         fn: "writeContinue",
+      },
+      writeInformational: {
+        fn: "writeInformational",
+        length: 1,
       },
       write: {
         fn: "write",
@@ -142,9 +165,25 @@ export default [
         length: 0,
         passThis: true,
       },
+      pauseReads: {
+        fn: "pauseSocketReads",
+        length: 0,
+      },
       drainRequestBody: {
         fn: "drainRequestBody",
         length: 0,
+      },
+      takeRequestTrailers: {
+        fn: "takeRequestTrailers",
+        length: 0,
+      },
+      takeRawHeaders: {
+        fn: "takeRawHeaders",
+        length: 0,
+      },
+      writeHeadAndEnd: {
+        fn: "writeHeadAndEnd",
+        length: 8,
       },
       dumpRequestBody: {
         fn: "dumpRequestBody",
@@ -203,13 +242,20 @@ export default [
     klass: {},
     finalize: true,
     noConstructor: true,
-    values: ["onAborted", "onWritable", "onData"],
+    values: ["onAborted", "onWritable", "onData", "pendingWriteBuffer"],
   }),
 
   define({
     name: "ServerWebSocket",
     JSType: "0b11101110",
     memoryCost: true,
+    // R-2: user impls already take `&self` (see ServerWebSocket.rs:29 — flags
+    // / packed_websocket_ptr / this_value are `Cell`/`JsCell`). The generated
+    // shims were still `this: &mut ServerWebSocket`, which is Stacked-Borrows
+    // UB whenever a host-fn re-enters JS (cork/send → on_message). With
+    // `sharedThis` the codegen emits `this: &ServerWebSocket` and routes
+    // through the `host_fn::*_shared` helpers.
+    sharedThis: true,
     proto: {
       send: {
         fn: "send",
@@ -323,7 +369,7 @@ export default [
     finalize: true,
     construct: true,
     klass: {},
-    values: ["socket"],
+    values: ["server"],
   }),
 
   define({

@@ -3,6 +3,8 @@ import { define } from "../../codegen/class-definitions";
 export default [
   define({
     name: "Request",
+    // R-2 Phase 2: user impls take `&self`; emit `this: &T` shims.
+    sharedThis: true,
     construct: true,
     constructNeedsThis: true,
     finalize: true,
@@ -16,6 +18,7 @@ export default [
     values: ["stream"],
     proto: {
       text: { fn: "getText", async: true },
+      textStream: { fn: "getTextStream" },
       json: { fn: "getJSON", async: true },
       bytes: { fn: "getBytes", async: true },
       body: { getter: "getBody", cache: true },
@@ -69,6 +72,8 @@ export default [
   }),
   define({
     name: "Response",
+    // R-2 Phase 2: user impls take `&self`; emit `this: &T` shims.
+    sharedThis: true,
     construct: true,
     constructNeedsThis: true,
     finalize: true,
@@ -88,7 +93,7 @@ export default [
         fn: "constructError",
       },
     },
-    values: ["stream"],
+    values: ["stream", "transform"],
     proto: {
       url: {
         getter: "getURL",
@@ -97,6 +102,7 @@ export default [
       body: { getter: "getBody", cache: true },
 
       text: { fn: "getText", async: true },
+      textStream: { fn: "getTextStream" },
       json: { fn: "getJSON", async: true },
       bytes: { fn: "getBytes", async: true },
       arrayBuffer: { fn: "getArrayBuffer", async: true },
@@ -132,6 +138,8 @@ export default [
   }),
   define({
     name: "Blob",
+    // R-2 Phase 2: user impls take `&self`; emit `this: &T` shims.
+    sharedThis: true,
     final: false,
     construct: true,
     finalize: true,

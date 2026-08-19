@@ -14,8 +14,7 @@
 #include "DOMURL.h"
 #include "ZigGlobalObject.h"
 #include "IDLTypes.h"
-
-extern "C" void Bun__freeDefaultAllocator(void* ptr);
+#include "MimallocWTFMalloc.h"
 
 #include <limits>
 #include <wtf/Seconds.h>
@@ -46,11 +45,6 @@ extern "C" void Bun__freeDefaultAllocator(void* ptr);
 using namespace JSC;
 extern "C" BunString BunString__fromBytes(const char* bytes, size_t length);
 
-extern "C" [[ZIG_EXPORT(nothrow)]] bool Bun__WTFStringImpl__hasPrefix(const WTF::StringImpl* impl, const char* bytes, size_t length)
-{
-    return impl->startsWith({ bytes, length });
-}
-
 extern "C" [[ZIG_EXPORT(nothrow)]] void Bun__WTFStringImpl__deref(WTF::StringImpl* impl)
 {
     impl->deref();
@@ -58,6 +52,12 @@ extern "C" [[ZIG_EXPORT(nothrow)]] void Bun__WTFStringImpl__deref(WTF::StringImp
 extern "C" [[ZIG_EXPORT(nothrow)]] void Bun__WTFStringImpl__ref(WTF::StringImpl* impl)
 {
     impl->ref();
+}
+// Cold path for the Rust-side inlined `deref()`: caller has already brought
+// the refcount to zero via `fetch_sub`, so this is destroy-only.
+extern "C" [[ZIG_EXPORT(nothrow)]] void Bun__WTFStringImpl__destroy(WTF::StringImpl* impl)
+{
+    WTF::StringImpl::destroy(impl);
 }
 
 extern "C" [[ZIG_EXPORT(nothrow)]] bool BunString__fromJS(JSC::JSGlobalObject* globalObject, JSC::EncodedJSValue encodedValue, BunString* bunString)
@@ -94,11 +94,13 @@ extern "C" [[ZIG_EXPORT(zero_is_throw)]] JSC::EncodedJSValue BunString__createUT
         return JSValue::encode(jsEmptyString(vm));
     }
     if (simdutf::validate_ascii(ptr, length)) {
+        if (length > WTF::String::MaxLength) [[unlikely]] {
+            return Bun::ERR::STRING_TOO_LONG(scope, globalObject);
+        }
         return JSValue::encode(jsString(vm, WTF::String(std::span<const Latin1Character>(reinterpret_cast<const Latin1Character*>(ptr), length))));
     }
 
-    auto str = WTF::String::fromUTF8ReplacingInvalidSequences(std::span { reinterpret_cast<const Latin1Character*>(ptr), length });
-    EXCEPTION_ASSERT(str.isNull() == !!scope.exception());
+    auto str = Zig::convertUTF8ToString(std::span { reinterpret_cast<const unsigned char*>(ptr), length });
     if (str.isNull()) [[unlikely]] {
         throwOutOfMemoryError(globalObject, scope);
         return {};
@@ -107,53 +109,42 @@ extern "C" [[ZIG_EXPORT(zero_is_throw)]] JSC::EncodedJSValue BunString__createUT
     return JSValue::encode(jsString(vm, WTF::move(str)));
 }
 
-extern "C" [[ZIG_EXPORT(zero_is_throw)]] JSC::EncodedJSValue BunString__transferToJS(BunString* bunString, JSC::JSGlobalObject* globalObject)
+JSC::JSValue BunString::transferToJS(JSC::JSGlobalObject* globalObject)
 {
     auto& vm = JSC::getVM(globalObject);
 
-    if (bunString->tag == BunStringTag::Empty) [[unlikely]] {
-        return JSValue::encode(JSC::jsEmptyString(vm));
+    if (this->tag == BunStringTag::Empty) [[unlikely]] {
+        return JSC::jsEmptyString(vm);
     }
 
-    if (bunString->tag == BunStringTag::Dead) [[unlikely]] {
+    if (this->tag == BunStringTag::Dead) [[unlikely]] {
         auto scope = DECLARE_THROW_SCOPE(vm);
-        return Bun::ERR::STRING_TOO_LONG(scope, globalObject);
+        return JSValue::decode(Bun::ERR::STRING_TOO_LONG(scope, globalObject));
     }
 
-    if (bunString->tag == BunStringTag::WTFStringImpl) [[likely]] {
+    if (this->tag == BunStringTag::WTFStringImpl) [[likely]] {
 #if ASSERT_ENABLED
-        unsigned refCount = bunString->impl.wtf->refCount();
-        ASSERT(refCount > 0 && !bunString->impl.wtf->isEmpty());
+        unsigned refCount = this->impl.wtf->refCount();
+        ASSERT(refCount > 0 && !this->impl.wtf->isEmpty());
 #endif
-        auto str = bunString->toWTFString();
+        auto str = this->toWTFString();
 #if ASSERT_ENABLED
-        unsigned newRefCount = bunString->impl.wtf->refCount();
+        unsigned newRefCount = this->impl.wtf->refCount();
         ASSERT(newRefCount == refCount + 1);
 #endif
-        bunString->impl.wtf->deref();
-        *bunString = { .tag = BunStringTag::Dead };
-        return JSValue::encode(jsString(vm, WTF::move(str)));
+        this->impl.wtf->deref();
+        *this = { .tag = BunStringTag::Dead };
+        return jsString(vm, WTF::move(str));
     }
 
-    WTF::String str = bunString->toWTFString();
-    *bunString = { .tag = BunStringTag::Dead };
-    return JSValue::encode(jsString(vm, WTF::move(str)));
+    WTF::String str = this->toWTFString();
+    *this = { .tag = BunStringTag::Dead };
+    return jsString(vm, WTF::move(str));
 }
 
-// int64_t max to say "not a number"
-extern "C" [[ZIG_EXPORT(nothrow)]] int64_t BunString__toInt32(const BunString* bunString)
+extern "C" [[ZIG_EXPORT(zero_is_throw)]] JSC::EncodedJSValue BunString__transferToJS(BunString* bunString, JSC::JSGlobalObject* globalObject)
 {
-    if (bunString->tag == BunStringTag::Empty || bunString->tag == BunStringTag::Dead) {
-        return std::numeric_limits<int64_t>::max();
-    }
-
-    String str = bunString->toWTFString();
-    auto val = WTF::parseIntegerAllowingTrailingJunk<int32_t>(str);
-    if (val) {
-        return val.value();
-    }
-
-    return std::numeric_limits<int64_t>::max();
+    return JSValue::encode(bunString->transferToJS(globalObject));
 }
 
 namespace Bun {
@@ -325,39 +316,39 @@ bool isCrossThreadShareable(const WTF::String& string)
     return true;
 }
 
-Ref<WTF::StringImpl> toCrossThreadShareable(Ref<WTF::StringImpl> impl)
+// An isolated copy still gets handed to (possibly several) receiving threads —
+// BroadcastChannel fans a single SerializedScriptValue out to N contexts, each
+// of which deserializes the same stored string — so the copy needs the same
+// pre-hash + never-atomize treatment as a directly-shared original. Otherwise
+// the receivers race the lazy m_hashAndFlags update (debug: ASSERT(!hasHash())
+// in setHash; e.g. two workers switch()ing on the same BroadcastChannel
+// message). Static strings are immortal, pre-hashed and safe to share as-is.
+static Ref<WTF::StringImpl> isolatedCopyForSharing(WTF::StringImpl& impl)
 {
-    if (impl->isAtom() || impl->isSymbol())
-        return impl->isolatedCopy();
-
-    if (impl->bufferOwnership() == StringImpl::BufferSubstring)
-        return impl->isolatedCopy();
-
-    if (impl->length() < kMinCrossThreadShareableLength)
-        return impl->isolatedCopy();
-
-    // 3) Ensure we won't lazily touch hash/flags on the consumer thread
-    // Force hash computation on this thread before sharing
-    impl->hash();
-    impl->setNeverAtomize();
-
-    return impl;
+    Ref<WTF::StringImpl> copy = impl.isolatedCopy();
+    if (!copy->isStatic()) {
+        copy->hash();
+        copy->setNeverAtomize();
+    }
+    return copy;
 }
 
 WTF::String toCrossThreadShareable(const WTF::String& string)
 {
-    if (string.length() < kMinCrossThreadShareableLength)
-        return string.isolatedCopy();
-
     auto* impl = string.impl();
+    if (!impl)
+        return string;
+
+    if (string.length() < kMinCrossThreadShareableLength)
+        return isolatedCopyForSharing(*impl);
 
     // 1) Never share AtomStringImpl/symbols - they have special thread-unsafe behavior
     if (impl->isAtom() || impl->isSymbol())
-        return string.isolatedCopy();
+        return isolatedCopyForSharing(*impl);
 
     // 2) Don't share slices
     if (impl->bufferOwnership() == StringImpl::BufferSubstring)
-        return string.isolatedCopy();
+        return isolatedCopyForSharing(*impl);
 
     // 3) Ensure we won't lazily touch hash/flags on the consumer thread
     // Force hash computation on this thread before sharing
@@ -409,7 +400,7 @@ extern "C" BunString BunString__fromUTF8(const char* bytes, size_t length)
     if (simdutf::validate_utf8(bytes, length)) {
         size_t u16Length = simdutf::utf16_length_from_utf8(bytes, length);
         std::span<char16_t> ptr;
-        auto impl = WTF::StringImpl::tryCreateUninitialized(static_cast<unsigned int>(u16Length), ptr);
+        auto impl = WTF::StringImpl::tryCreateUninitialized(u16Length, ptr);
         if (!impl) [[unlikely]] {
             return { .tag = BunStringTag::Dead };
         }
@@ -417,7 +408,7 @@ extern "C" BunString BunString__fromUTF8(const char* bytes, size_t length)
         return { BunStringTag::WTFStringImpl, { .wtf = impl.leakRef() } };
     }
 
-    auto str = WTF::String::fromUTF8ReplacingInvalidSequences(std::span { reinterpret_cast<const Latin1Character*>(bytes), length });
+    auto str = Zig::convertUTF8ToString(std::span { reinterpret_cast<const unsigned char*>(bytes), length });
     if (str.isNull()) [[unlikely]] {
         return { .tag = BunStringTag::Dead };
     }
@@ -535,27 +526,6 @@ extern "C" JSC::EncodedJSValue BunString__createArray(
     return JSValue::encode(array);
 }
 
-extern "C" [[ZIG_EXPORT(nothrow)]] void BunString__toWTFString(BunString* bunString)
-{
-    WTF::String str;
-    if (bunString->tag == BunStringTag::ZigString) {
-        if (Zig::isTaggedExternalPtr(bunString->impl.zig.ptr)) {
-            str = Zig::toString(bunString->impl.zig);
-        } else {
-            str = Zig::toStringCopy(bunString->impl.zig);
-        }
-
-    } else if (bunString->tag == BunStringTag::StaticZigString) {
-        str = Zig::toStringStatic(bunString->impl.zig);
-    } else {
-        return;
-    }
-
-    auto impl = str.releaseImpl();
-    bunString->impl.wtf = impl.leakRef();
-    bunString->tag = BunStringTag::WTFStringImpl;
-}
-
 extern "C" BunString URL__getFileURLString(BunString* filePath)
 {
     return Bun::toStringRef(WTF::URL::fileURLWithFileSystemPath(filePath->toWTFString()).stringWithoutFragmentIdentifier());
@@ -653,14 +623,6 @@ extern "C" BunString URL__getHrefJoin(BunString* baseStr, BunString* relativeStr
     return Bun::toStringRef(url.string());
 }
 
-extern "C" BunString URL__hash(WTF::URL* url)
-{
-    const auto& fragment = url->fragmentIdentifier().isEmpty()
-        ? emptyString()
-        : url->fragmentIdentifierWithLeadingNumberSign().toStringWithoutCopying();
-    return Bun::toStringRef(fragment);
-}
-
 extern "C" BunString URL__fragmentIdentifier(WTF::URL* url)
 {
     const auto& fragment = url->fragmentIdentifier().isEmpty()
@@ -704,11 +666,6 @@ extern "C" BunString URL__password(WTF::URL* url)
     return Bun::toStringRef(url->password());
 }
 
-extern "C" BunString URL__search(WTF::URL* url)
-{
-    return Bun::toStringRef(url->query().toStringWithoutCopying());
-}
-
 /// Returns the host WITHOUT the port.
 ///
 /// Note that this does NOT match JS behavior, which returns the host with the port.
@@ -747,20 +704,6 @@ extern "C" uint32_t URL__port(WTF::URL* url)
 extern "C" BunString URL__pathname(WTF::URL* url)
 {
     return Bun::toStringRef(url->path().toStringWithoutCopying());
-}
-
-size_t BunString::utf8ByteLength(const WTF::String& str)
-{
-    if (str.isEmpty())
-        return 0;
-
-    if (str.is8Bit()) {
-        const auto s = str.span8();
-        return simdutf::utf8_length_from_latin1(reinterpret_cast<const char*>(s.data()), static_cast<size_t>(s.size()));
-    } else {
-        const auto s = str.span16();
-        return simdutf::utf8_length_from_utf16(reinterpret_cast<const char16_t*>(s.data()), static_cast<size_t>(s.size()));
-    }
 }
 
 WTF::String BunString::toWTFString() const
@@ -858,7 +801,9 @@ extern "C" BunString BunString__createExternalGloballyAllocatedLatin1(
 {
     ASSERT(length > 0);
     Ref<WTF::ExternalStringImpl> impl = WTF::ExternalStringImpl::create({ bytes, length }, nullptr, [](void*, void* ptr, size_t) {
-        Bun__freeDefaultAllocator(ptr);
+        // `bytes` came from a Rust `Vec` (the global allocator); free with
+        // `defaultAllocatorFree` so it agrees with the `#[global_allocator]`.
+        Bun::defaultAllocatorFree(ptr);
     });
     return { BunStringTag::WTFStringImpl, { .wtf = &impl.leakRef() } };
 }
@@ -869,7 +814,9 @@ extern "C" BunString BunString__createExternalGloballyAllocatedUTF16(
 {
     ASSERT(length > 0);
     Ref<WTF::ExternalStringImpl> impl = WTF::ExternalStringImpl::create({ bytes, length }, nullptr, [](void*, void* ptr, size_t) {
-        Bun__freeDefaultAllocator(ptr);
+        // `bytes` came from a Rust `Vec` (the global allocator); free with
+        // `defaultAllocatorFree` so it agrees with the `#[global_allocator]`.
+        Bun::defaultAllocatorFree(ptr);
     });
     return { BunStringTag::WTFStringImpl, { .wtf = &impl.leakRef() } };
 }

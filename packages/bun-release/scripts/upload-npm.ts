@@ -130,7 +130,7 @@ without *requiring* a postinstall script.
 
 async function buildModule(
   release: Awaited<ReturnType<typeof getRelease>>,
-  { bin, exe, os, arch }: Platform,
+  { bin, exe, os, arch, abi }: Platform,
 ): Promise<void> {
   const module = platformPackage(owner, bin);
   log("Building:", `${module}@${version}`);

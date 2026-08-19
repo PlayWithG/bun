@@ -2,8 +2,7 @@
 
 #include "JavaScriptCore/JSArrayBuffer.h"
 #include "JavaScriptCore/TypedArrayType.h"
-
-extern "C" void Bun__freeDefaultAllocator(void* ptr);
+#include "MimallocWTFMalloc.h"
 
 namespace Bun {
 
@@ -21,7 +20,7 @@ extern "C" JSC::EncodedJSValue JSUint8Array__fromDefaultAllocator(JSC::JSGlobalO
 
     if (length > 0) [[likely]] {
         auto buffer = ArrayBuffer::createFromBytes({ ptr, length }, createSharedTask<void(void*)>([](void* p) {
-            freeDefaultAllocator(p);
+            Bun::defaultAllocatorFree(p);
         }));
 
         uint8Array = JSC::JSUint8Array::create(lexicalGlobalObject, lexicalGlobalObject->typedArrayStructureWithTypedArrayType<JSC::TypeUint8>(), WTF::move(buffer), 0, length);
@@ -39,7 +38,7 @@ extern "C" JSC::EncodedJSValue JSArrayBuffer__fromDefaultAllocator(JSC::JSGlobal
 
     if (length > 0) [[likely]] {
         buffer = ArrayBuffer::createFromBytes({ ptr, length }, createSharedTask<void(void*)>([](void* p) {
-            freeDefaultAllocator(p);
+            Bun::defaultAllocatorFree(p);
         }));
     } else {
         buffer = ArrayBuffer::create(0, 1);

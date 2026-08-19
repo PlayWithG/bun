@@ -58,7 +58,9 @@ public:
     }
     static JSC::GCClient::IsoSubspace* subspaceForImpl(JSC::VM& vm);
     DECLARE_VISIT_CHILDREN;
+    template<typename Visitor> void visitAdditionalChildrenInGCThread(Visitor&);
 
+    template<typename Visitor> static void visitOutputConstraints(JSCell*, Visitor&);
     static void analyzeHeap(JSCell*, JSC::HeapAnalyzer&);
 
 protected:
@@ -77,11 +79,6 @@ inline JSC::WeakHandleOwner* wrapperOwner(DOMWrapperWorld&, AbortController*)
 {
     static NeverDestroyed<JSAbortControllerOwner> owner;
     return &owner.get();
-}
-
-inline void* wrapperKey(AbortController* wrappableObject)
-{
-    return wrappableObject;
 }
 
 JSC::JSValue toJS(JSC::JSGlobalObject*, JSDOMGlobalObject*, AbortController&);

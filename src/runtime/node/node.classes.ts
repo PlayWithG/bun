@@ -3,6 +3,7 @@ import { define, InvalidThisBehavior } from "../../codegen/class-definitions";
 export default [
   define({
     name: "DNSResolver",
+    rustPath: "crate::dns_jsc::Resolver",
     construct: false,
     noConstructor: true,
     finalize: true,
@@ -93,10 +94,6 @@ export default [
         fn: "doUnref",
         length: 0,
       },
-      hasRef: {
-        fn: "hasRef",
-        length: 0,
-      },
       close: {
         fn: "doClose",
         length: 0,
@@ -130,8 +127,10 @@ export default [
   }),
   define({
     name: "Timeout",
+    rustPath: "crate::timer::TimeoutObject",
     construct: true,
     finalize: true,
+    sharedThis: true,
     configurable: false,
     klass: {},
     JSType: "0b11101110",
@@ -199,8 +198,10 @@ export default [
   }),
   define({
     name: "Immediate",
+    rustPath: "crate::timer::ImmediateObject",
     construct: true,
     finalize: true,
+    sharedThis: true,
     configurable: false,
     klass: {},
     JSType: "0b11101110",
@@ -238,6 +239,7 @@ export default [
   }),
   define({
     name: "NodeJSFS",
+    rustPath: "crate::node::node_fs_binding::Binding",
     construct: true,
     noConstructor: true,
     finalize: true,
@@ -319,7 +321,6 @@ export default [
       symlinkSync: { async: false, fn: "symlinkSync", length: 3 },
       truncate: { async: true, fn: "truncate", length: 3 },
       truncateSync: { async: false, fn: "truncateSync", length: 2 },
-      unwatchFile: { async: true, fn: "unwatchFile", length: 2 },
       unlink: { async: true, fn: "unlink", length: 2 },
       unlinkSync: { async: false, fn: "unlinkSync", length: 1 },
       utimes: { async: true, fn: "utimes", length: 4 },
