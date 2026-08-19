@@ -146,8 +146,10 @@ jobs:
             --owner=0 --group=0 --numeric-owner \
             -czf "$BUILD_DIR/bun-android-aarch64-1.4.0.tar.gz" \
             -C "$BUILD_DIR" bun
-          sha256sum "$BUILD_DIR/bun" "$BUILD_DIR/bun-android-aarch64-1.4.0.tar.gz" \
-            | tee "$BUILD_DIR/SHA256SUMS"
+          (
+            cd "$BUILD_DIR"
+            sha256sum bun bun-android-aarch64-1.4.0.tar.gz
+          ) | tee "$BUILD_DIR/SHA256SUMS"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
