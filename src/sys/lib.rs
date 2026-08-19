@@ -8510,8 +8510,30 @@ pub mod elf {
             0
         }
 
-        // SAFETY: ctx outlives the dl_iterate_phdr call; callback signature matches libc's contract.
-        unsafe { libc::dl_iterate_phdr(Some(callback), (&raw mut ctx).cast::<c_void>()) };
+        // Android's NDK headers expose `dl_iterate_phdr`, but some NDK API
+        // level stubs do not export it to the linker. Resolve it at runtime so
+        // the same binary links with the stock NDK and still uses the symbol
+        // provided by native Termux/Bionic when available.
+        #[cfg(target_os = "android")]
+        {
+            type IteratePhdr = unsafe extern "C" fn(
+                Option<extern "C" fn(*mut libc::dl_phdr_info, libc::size_t, *mut c_void) -> c_int>,
+                *mut c_void,
+            ) -> c_int;
+            let Some(symbol) = super::dlsym_impl(None, bun_core::zstr!("dl_iterate_phdr")) else {
+                return ctx.result;
+            };
+            // SAFETY: dlsym returned the process's C-ABI dl_iterate_phdr symbol;
+            // the declared function pointer matches the platform contract.
+            let iterate: IteratePhdr = unsafe { core::mem::transmute(symbol) };
+            // SAFETY: ctx outlives the call and callback matches the C ABI.
+            unsafe { iterate(Some(callback), (&raw mut ctx).cast::<c_void>()) };
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            // SAFETY: ctx outlives the dl_iterate_phdr call; callback signature matches libc's contract.
+            unsafe { libc::dl_iterate_phdr(Some(callback), (&raw mut ctx).cast::<c_void>()) };
+        }
         ctx.result
     }
 }
