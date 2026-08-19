@@ -771,7 +771,7 @@ impl Channel {
 
         this.set_channel(channel);
         #[cfg(target_os = "android")]
-        configure_android_resolver_servers(channel);
+        Self::configure_android_resolver_servers(channel);
         None
     }
 
