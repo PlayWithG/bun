@@ -58,14 +58,15 @@ export { bunExeName, shouldStrip };
 /**
  * System libraries to link. Platform-dependent.
  */
-function systemLibs(cfg: Config): string[] {
+export function systemLibs(cfg: Config): string[] {
   const libs: string[] = [];
 
   if (cfg.linux) {
     if (cfg.abi === "android") {
-      // bionic: pthread/dl/rt are folded into libc; no separate libatomic
-      // (compiler-rt builtins). -llog for __android_log_*.
-      libs.push("-lc", "-lm", "-llog", "-ldl");
+      // Android exposes loader APIs through Bionic, but --as-needed can drop
+      // libdl after the Rust/C++ references are reached through static archives.
+      // Keep the dynamic libdl dependency in the final ELF for dlopen/dlsym.
+      libs.push("-lc", "-lm", "-llog", "-Wl,--no-as-needed", "-ldl", "-Wl,--as-needed");
     } else {
       libs.push("-lc", "-lpthread", "-ldl");
       // libatomic: static by default (CI distros ship it), dynamic on Arch-like.

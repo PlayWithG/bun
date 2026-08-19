@@ -12,6 +12,7 @@ import { join, resolve } from "node:path";
 import { androidSharedRuntimeRpath, resolveConfig, type Config, type Toolchain } from "./config.ts";
 import { BuildError } from "./error.ts";
 import { computeFlags } from "./flags.ts";
+import { systemLibs } from "./bun.ts";
 import { Ninja } from "./ninja.ts";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
@@ -32,6 +33,11 @@ try {
   assert.equal(shared.cfg.androidLibcxxDir, shared.libcxxDir);
   assert.equal(shared.cfg.androidLibcxxRpath, shared.cfg.host.android ? join(shared.prefix, "lib") : "$ORIGIN/../lib");
   assert.equal(androidSharedRuntimeRpath(false, shared.prefix), "$ORIGIN/../lib");
+  const androidSystemLibs = systemLibs(shared.cfg);
+  const dlIndex = androidSystemLibs.indexOf("-ldl");
+  assert(dlIndex > 0);
+  assert.equal(androidSystemLibs[dlIndex - 1], "-Wl,--no-as-needed");
+  assert.equal(androidSystemLibs[dlIndex + 1], "-Wl,--as-needed");
 
   const crossCfg = {
     ...shared.cfg,
