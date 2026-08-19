@@ -101,7 +101,7 @@ export async function getSemver(tag?: string, build?: number): Promise<string> {
   const version = latest_tag_name.replace("bun-v", "");
   const { tag_name } = await getRelease(tag);
   if (tag_name !== "canary") {
-    return tag_name.replace("bun-v", "");
+    return tag_name.replace(/^bun-v|^termux-v/, "");
   }
   if (build === undefined) {
     build = await getBuild();
@@ -112,7 +112,7 @@ export async function getSemver(tag?: string, build?: number): Promise<string> {
 }
 
 export function formatTag(tag: string): string {
-  if (tag === "canary" || tag.startsWith("bun-v")) {
+  if (tag === "canary" || tag.startsWith("bun-v") || tag.startsWith("termux-v")) {
     return tag;
   }
   if (tag.startsWith("v")) {

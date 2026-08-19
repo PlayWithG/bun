@@ -13,10 +13,18 @@ import { chmod, copy, exists, join, write, writeJson } from "../src/fs";
 import { getRelease, getSemver } from "../src/github";
 import type { Platform } from "../src/platform";
 import { platforms } from "../src/platform";
+import {
+  getNpmReleaseConfig,
+  platformPackage,
+  platformPackageMetadata,
+  rootPackageMetadata,
+  verifySha256,
+} from "../src/npm/package";
 import { spawn } from "../src/spawn";
 
-const module = "bun";
-const owner = "@oven";
+const config = getNpmReleaseConfig(platforms);
+const module = config.rootPackage;
+const owner = config.owner;
 
 const [tag, action] = process.argv.slice(2);
 
@@ -41,16 +49,24 @@ process.exit(0); // HACK
 
 async function build(): Promise<void> {
   await buildRootModule();
-  for (const platform of platforms) {
-    if (action !== "publish" && (platform.os !== process.platform || platform.arch !== process.arch)) continue;
+  for (const platform of config.platforms) {
+    if (
+      action !== "publish" &&
+      !config.explicitPlatforms &&
+      (platform.os !== process.platform || platform.arch !== process.arch)
+    )
+      continue;
     await buildModule(release, platform);
   }
 }
 
 async function publish(dryRun?: boolean): Promise<void> {
-  const modules = platforms
-    .filter(({ os, arch }) => action === "publish" || (os === process.platform && arch === process.arch))
-    .map(({ bin }) => `${owner}/${bin}`);
+  const modules = config.platforms
+    .filter(
+      ({ os, arch }) =>
+        action === "publish" || config.explicitPlatforms || (os === process.platform && arch === process.arch),
+    )
+    .map(({ bin }) => platformPackage(owner, bin));
   modules.push(module);
   for (const module of modules) {
     publishModule(module, dryRun);
@@ -106,33 +122,7 @@ Unfortunately, it is not possible to fix all cases on all platforms
 without *requiring* a postinstall script.
 `,
   );
-  const os = [...new Set(platforms.map(({ os }) => os))];
-  const cpu = [...new Set(platforms.map(({ arch }) => arch))];
-  writeJson(join(cwd, "package.json"), {
-    name: module,
-    description: "Bun is a fast all-in-one JavaScript runtime.",
-    version: version,
-    scripts: {
-      postinstall: "node install.js",
-    },
-    optionalDependencies: Object.fromEntries(
-      platforms.map(({ bin }) => [
-        `${owner}/${bin}`,
-        dryRun ? `file:./oven-${bin.replaceAll("/", "-") + "-" + version + ".tgz"}` : version,
-      ]),
-    ),
-    bin: {
-      bun: "bin/bun.exe",
-      bunx: "bin/bunx.exe",
-    },
-    os,
-    cpu,
-    keywords: ["bun", "bun.js", "node", "node.js", "runtime", "bundler", "transpiler", "typescript"],
-    homepage: "https://bun.com",
-    bugs: "https://github.com/oven-sh/issues",
-    license: "MIT",
-    repository: "https://github.com/oven-sh/bun",
-  });
+  writeJson(join(cwd, "package.json"), rootPackageMetadata(config, version, Boolean(dryRun)));
   if (exists(".npmrc")) {
     copy(".npmrc", join(cwd, ".npmrc"));
   }
@@ -142,30 +132,32 @@ async function buildModule(
   release: Awaited<ReturnType<typeof getRelease>>,
   { bin, exe, os, arch }: Platform,
 ): Promise<void> {
-  const module = `${owner}/${bin}`;
+  const module = platformPackage(owner, bin);
   log("Building:", `${module}@${version}`);
-  const asset = release.assets.find(({ name }) => name === `${bin}.zip`);
+  const asset = release.assets.find(({ name }) => name === (config.assetName ?? `${bin}.zip`));
   if (!asset) {
     error(`No asset found: ${bin}`);
     return;
   }
-  const bun = await extractFromZip(asset.browser_download_url, `${bin}/bun`);
+  let bun: ArrayBuffer | JSZipObject;
+  if (config.assetFormat === "raw") {
+    const raw = await fetch(asset.browser_download_url).then(response => response.arrayBuffer());
+    const expectedSha256 =
+      config.assetSha256 ??
+      ("digest" in asset && typeof asset.digest === "string" ? asset.digest.replace(/^sha256:/, "") : undefined);
+    if (!expectedSha256) {
+      throw new Error(`No SHA-256 digest available for raw asset ${asset.name}`);
+    }
+    verifySha256(raw, expectedSha256);
+    bun = raw;
+  } else {
+    bun = await extractFromZip(asset.browser_download_url, `${bin}/bun`);
+  }
   const cwd = join("npm", module);
   mkdirSync(dirname(join(cwd, exe)), { recursive: true });
-  write(join(cwd, exe), await bun.async("arraybuffer"));
+  write(join(cwd, exe), bun instanceof ArrayBuffer ? bun : await bun.async("arraybuffer"));
   chmod(join(cwd, exe), 0o755);
-  writeJson(join(cwd, "package.json"), {
-    name: module,
-    version: version,
-    description: "This is the macOS arm64 binary for Bun, a fast all-in-one JavaScript runtime.",
-    homepage: "https://bun.com",
-    bugs: "https://github.com/oven-sh/issues",
-    license: "MIT",
-    repository: "https://github.com/oven-sh/bun",
-    preferUnplugged: true,
-    os: [os],
-    cpu: [arch],
-  });
+  writeJson(join(cwd, "package.json"), platformPackageMetadata({ bin, exe, os, arch }, module, version));
   if (exists(".npmrc")) {
     copy(".npmrc", join(cwd, ".npmrc"));
   }
@@ -173,6 +165,7 @@ async function buildModule(
 
 function publishModule(name: string, dryRun?: boolean): void {
   log(dryRun ? "Dry-run Publishing:" : "Publishing:", `${name}@${version}`);
+  const archive = name.replace(/^@/, "").replaceAll("/", "-") + `-${version}.tgz`;
   if (!dryRun) {
     const { exitCode, stdout, stderr } = spawn(
       "npm",
@@ -201,6 +194,7 @@ function publishModule(name: string, dryRun?: boolean): void {
       throw new Error("npm publish failed with code " + exitCode);
     }
   } else {
+    rmSync(join("npm", name, archive), { force: true });
     const { exitCode, stdout, stderr } = spawn("npm", ["pack"], {
       cwd: join("npm", name),
     });
@@ -248,21 +242,23 @@ async function test() {
   const root = await mkdtemp(join(tmpdir(), "bun-release-test-"));
   const $ = new Bun.$.Shell().cwd(root);
 
-  for (const platform of platforms) {
+  for (const platform of config.platforms) {
     if (platform.os !== process.platform) continue;
     if (platform.arch !== process.arch) continue;
     copy(
       join(
         import.meta.dir,
-        "../npm/@oven/",
+        "../npm",
+        owner,
         platform.bin,
-        "oven-" + platform.bin.replaceAll("/", "-") + `-${version}.tgz`,
+        owner.replace(/^@/, "") + "-" + platform.bin.replaceAll("/", "-") + `-${version}.tgz`,
       ),
       join(root, `${platform.bin}-${version}.tgz`),
     );
   }
 
-  copy(join(import.meta.dir, "../npm", "bun", "bun-" + version + ".tgz"), join(root, "bun-" + version + ".tgz"));
+  const rootArchive = module.replace(/^@/, "").replaceAll("/", "-") + "-" + version + ".tgz";
+  copy(join(import.meta.dir, "../npm", module, rootArchive), join(root, rootArchive));
 
   console.log(root);
   for (const [install, exec] of [

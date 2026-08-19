@@ -16,6 +16,8 @@
     "format": "prettier --write src scripts",
     "get-version": "bun scripts/get-version.ts",
     "upload-npm": "bun scripts/upload-npm.ts",
+    "test": "bun test src/npm/package.test.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "upload-assets": "bun scripts/upload-assets.ts",
     "upload-s3": "bun scripts/upload-s3.ts"
   }
