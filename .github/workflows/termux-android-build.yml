@@ -1,0 +1,122 @@
+name: Termux Android ARM64 Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to build
+        required: true
+        default: termux-v1.4.0
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: termux-android-${{ inputs.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Bun for native Termux Android ARM64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            clang cmake file git gzip ninja-build pkg-config python3 tar unzip
+
+      - name: Install Android NDK r29
+        env:
+          NDK_ROOT: ${{ runner.temp }}/android-ndk-r29
+        run: |
+          mkdir -p "$RUNNER_TEMP/android-ndk-download"
+          curl --fail --location --retry 5 \
+            --output "$RUNNER_TEMP/android-ndk-download/android-ndk-r29-linux.zip" \
+            https://dl.google.com/android/repository/android-ndk-r29-linux.zip
+          unzip -q "$RUNNER_TEMP/android-ndk-download/android-ndk-r29-linux.zip" -d "$RUNNER_TEMP/android-ndk-download"
+          mv "$RUNNER_TEMP/android-ndk-download/android-ndk-r29" "$NDK_ROOT"
+          echo "ANDROID_NDK_ROOT=$NDK_ROOT" >> "$GITHUB_ENV"
+
+      - name: Setup Bun bootstrap
+        uses: ./.github/actions/setup-bun
+        with:
+          bun-version: "1.4.0"
+
+      - name: Install workspace dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Configure Android release build
+        env:
+          BUN_BUILD_BOOTSTRAP: ${{ runner.temp }}/.bun/bin/bun
+          BUN_BUILD_ZIG_CPU: cortex_a76
+          BUN_BUILD_ZIG_CODEGEN_THREADS: "8"
+          BUILD_DIR: ${{ github.workspace }}/build/termux-1.4.0
+        run: |
+          env -u LIBRARY_PATH -u C_INCLUDE_PATH \
+            BUN_INSTALL="$HOME/.bun" \
+            BUN_BUILD_BOOTSTRAP="$BUN_BUILD_BOOTSTRAP" \
+            ANDROID_NDK_ROOT="$ANDROID_NDK_ROOT" \
+            BUN_BUILD_ZIG_CPU="$BUN_BUILD_ZIG_CPU" \
+            BUN_BUILD_ZIG_CODEGEN_THREADS="$BUN_BUILD_ZIG_CODEGEN_THREADS" \
+            "$BUN_BUILD_BOOTSTRAP" scripts/build.ts \
+              --profile=android-release \
+              --android-ndk="$ANDROID_NDK_ROOT" \
+              --build-dir="$BUILD_DIR" \
+              --canary=off \
+              --configure-only
+
+      - name: Build Android release binary
+        env:
+          BUN_BUILD_BOOTSTRAP: ${{ runner.temp }}/.bun/bin/bun
+          BUN_BUILD_ZIG_CPU: cortex_a76
+          BUN_BUILD_ZIG_CODEGEN_THREADS: "8"
+          BUILD_DIR: ${{ github.workspace }}/build/termux-1.4.0
+        run: |
+          env -u LIBRARY_PATH -u C_INCLUDE_PATH \
+            BUN_INSTALL="$HOME/.bun" \
+            BUN_BUILD_BOOTSTRAP="$BUN_BUILD_BOOTSTRAP" \
+            ANDROID_NDK_ROOT="$ANDROID_NDK_ROOT" \
+            BUN_BUILD_ZIG_CPU="$BUN_BUILD_ZIG_CPU" \
+            BUN_BUILD_ZIG_CODEGEN_THREADS="$BUN_BUILD_ZIG_CODEGEN_THREADS" \
+            ninja -C "$BUILD_DIR" -j2 bun
+
+      - name: Verify binary identity
+        env:
+          BUILD_DIR: ${{ github.workspace }}/build/termux-1.4.0
+        run: |
+          test -x "$BUILD_DIR/bun"
+          test "$("$BUILD_DIR/bun" --version)" = "1.4.0"
+          file "$BUILD_DIR/bun"
+          readelf -d "$BUILD_DIR/bun"
+
+      - name: Package deterministic Termux artifact
+        env:
+          BUILD_DIR: ${{ github.workspace }}/build/termux-1.4.0
+        run: |
+          chmod 0755 "$BUILD_DIR/bun"
+          tar --format=gnu --sort=name --mtime='UTC 2000-01-01' \
+            --owner=0 --group=0 --numeric-owner \
+            -czf "$BUILD_DIR/bun-android-aarch64-1.4.0.tar.gz" \
+            -C "$BUILD_DIR" bun
+          sha256sum "$BUILD_DIR/bun" "$BUILD_DIR/bun-android-aarch64-1.4.0.tar.gz" \
+            | tee "$BUILD_DIR/SHA256SUMS"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: bun-termux-1.4.0
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            build/termux-1.4.0/bun
+            build/termux-1.4.0/bun-android-aarch64-1.4.0.tar.gz
+            build/termux-1.4.0/SHA256SUMS
