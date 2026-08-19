@@ -417,7 +417,9 @@ export function parseBindgenV2ListOutputs(stdout: string): string[] {
     throw new Error("bindgenv2 list-outputs has malformed framed payload");
   }
 
-  const other = outputs.filter(output => !output.endsWith(".cpp") && !output.endsWith(".zig"));
+  const other = outputs.filter(
+    output => !output.endsWith(".cpp") && !output.endsWith(".h") && !output.endsWith(".zig"),
+  );
   if (other.length > 0) {
     throw new Error(`bindgenv2 emitted unexpected output type: ${other.join(", ")}`);
   }
