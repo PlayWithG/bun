@@ -135,6 +135,7 @@ jobs:
           file "$BUILD_DIR/bun" | grep -qi 'aarch64'
           readelf -h "$BUILD_DIR/bun" | grep -q 'AArch64'
           readelf -d "$BUILD_DIR/bun" | grep -q 'libc++_shared.so'
+          readelf -d "$BUILD_DIR/bun" | grep -q 'libdl.so'
           readelf -d "$BUILD_DIR/bun"
 
       - name: Package deterministic Termux artifact
