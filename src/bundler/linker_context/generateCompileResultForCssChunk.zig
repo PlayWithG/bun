@@ -22,7 +22,7 @@ fn generateCompileResultForCssChunkImpl(worker: *ThreadPool.Worker, c: *LinkerCo
     defer trace.end();
 
     var arena = &worker.temporary_arena;
-    var allocating_writer = std.Io.Writer.Allocating.init(worker.allocator);
+    var allocating_writer = std.Io.Writer.Allocating.init(bun.default_allocator);
     defer _ = arena.reset(.retain_capacity);
 
     const css_import = chunk.content.css.imports_in_chunk_in_order.at(imports_in_chunk_index);

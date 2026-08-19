@@ -167,6 +167,14 @@ pub const Readable = union(enum) {
                     return globalThis.throwOutOfMemory();
                 };
 
+                if (comptime Environment.isAndroid) {
+                    // Pipe output is owned by `own`. Copy it into a JSC-managed
+                    // Buffer before releasing the allocator-owned slice; the
+                    // zero-copy external backing-store path is unsafe on Android.
+                    defer bun.default_allocator.free(own);
+                    return jsc.ArrayBuffer.createBuffer(globalThis, own) catch .zero;
+                }
+
                 return jsc.MarkedArrayBuffer.fromBytes(own, bun.default_allocator, .Uint8Array).toNodeBuffer(globalThis);
             },
             else => {

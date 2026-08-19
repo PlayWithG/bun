@@ -631,16 +631,10 @@ pub const MarkedArrayBuffer = struct {
 };
 
 pub export fn MarkedArrayBuffer_deallocator(bytes_: *anyopaque, _: *anyopaque) void {
-    const mimalloc = bun.mimalloc;
-    // zig's memory allocator interface won't work here
-    // mimalloc knows the size of things
-    // but we don't
-    // if (comptime Environment.allow_assert) {
-    //     bun.assert(mimalloc.mi_check_owned(bytes_) or
-    //         mimalloc.mi_heap_check_owned(jsc.VirtualMachine.get().arena.heap.?, bytes_));
-    // }
-
-    mimalloc.mi_free(bytes_);
+    // JSC only gives us the pointer. Use the selector for the allocator that
+    // originally owned this default-allocator backing store, rather than
+    // assuming every build uses mimalloc.
+    bun.allocators.Bun__freeDefaultAllocator(bytes_);
 }
 
 pub export fn BlobArrayBuffer_deallocator(_: *anyopaque, blob: *anyopaque) void {

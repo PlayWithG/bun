@@ -372,6 +372,51 @@ function shJoin(cfg: Config, args: string[]): string {
   return quoteArgs(args, cfg.host.os === "windows");
 }
 
+// Keep these in sync with src/codegen/bindgenv2/script.ts. The commands are
+// intentionally paired: list-outputs is a private configure-time protocol.
+const BINDGENV2_LIST_OUTPUTS_BEGIN = "BUN_BINDGENV2_LIST_OUTPUTS_BEGIN";
+const BINDGENV2_LIST_OUTPUTS_END = "BUN_BINDGENV2_LIST_OUTPUTS_END";
+
+/**
+ * Parse the exact list-outputs payload. Diagnostics may surround the frame,
+ * but never become paths or appear inside its single payload line.
+ */
+export function parseBindgenV2ListOutputs(stdout: string): string[] {
+  const lines = stdout.split(/\r?\n/);
+  const beginLines = lines.flatMap((line, index) => (line === BINDGENV2_LIST_OUTPUTS_BEGIN ? [index] : []));
+  const endLines = lines.flatMap((line, index) => (line === BINDGENV2_LIST_OUTPUTS_END ? [index] : []));
+
+  if (beginLines.length === 0 || endLines.length === 0) {
+    throw new Error("bindgenv2 list-outputs missing framed payload marker");
+  }
+  if (beginLines.length !== 1 || endLines.length !== 1) {
+    throw new Error("bindgenv2 list-outputs has duplicate frame markers");
+  }
+
+  const beginIndex = beginLines[0]!;
+  const endIndex = endLines[0]!;
+  if (endIndex !== beginIndex + 2) {
+    throw new Error("bindgenv2 list-outputs has malformed framed payload");
+  }
+
+  const payload = lines[beginIndex + 1]!;
+  if (payload.length === 0) {
+    throw new Error("bindgenv2 list-outputs has malformed framed payload");
+  }
+
+  const outputs = payload.split(";");
+  if (outputs.some(output => output.length === 0)) {
+    throw new Error("bindgenv2 list-outputs has malformed framed payload");
+  }
+
+  const other = outputs.filter(output => !output.endsWith(".cpp") && !output.endsWith(".zig"));
+  if (other.length > 0) {
+    throw new Error(`bindgenv2 emitted unexpected output type: ${other.join(", ")}`);
+  }
+
+  return outputs;
+}
+
 // ───────────────────────────────────────────────────────────────────────────
 // Individual step emitters
 // ───────────────────────────────────────────────────────────────────────────
@@ -778,18 +823,15 @@ function emitBindgenV2({ n, cfg, sources, o, dirStamp }: Ctx): void {
       hint: listResult.stderr?.trim(),
     });
   }
-  // Output is semicolon-separated (CMake list format).
-  const allOutputs = listResult.stdout
-    .trim()
-    .split(";")
-    .filter(p => p.length > 0);
-
-  assert(allOutputs.length > 0, "bindgenv2 list-outputs returned no files");
+  let allOutputs: string[];
+  try {
+    allOutputs = parseBindgenV2ListOutputs(listResult.stdout);
+  } catch (cause) {
+    throw new BuildError("bindgenv2 list-outputs returned an invalid framed payload", { file: script, cause });
+  }
 
   const cppOutputs = allOutputs.filter(p => p.endsWith(".cpp"));
   const zigOutputs = allOutputs.filter(p => p.endsWith(".zig"));
-  const other = allOutputs.filter(p => !p.endsWith(".cpp") && !p.endsWith(".zig"));
-  assert(other.length === 0, `bindgenv2 emitted unexpected output type: ${other.join(", ")}`);
 
   n.build({
     outputs: allOutputs,

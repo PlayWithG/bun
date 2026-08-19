@@ -600,22 +600,43 @@ pub const RunCommand = struct {
         this_transpiler.configureLinker();
     }
 
-    pub const bun_node_dir = switch (Environment.os) {
-        // This path is almost always a path to a user directory. So it cannot be inlined like
-        // our uses of /tmp. You can use one of these functions instead:
-        // - bun.windows.GetTempPathW (native)
-        // - bun.fs.FileSystem.RealFS.platformTempDir (any platform)
-        .windows => @compileError("Do not use RunCommand.bun_node_dir on Windows"),
-
-        .mac => "/private/tmp",
-        else => if (Environment.isAndroid) "/data/local/tmp" else "/tmp",
-    } ++ if (!Environment.isDebug)
-        "/bun-node" ++ if (Environment.git_sha_short.len > 0) "-" ++ Environment.git_sha_short else ""
+    const bun_node_dir_name = if (!Environment.isDebug)
+        "bun-node" ++ if (Environment.git_sha_short.len > 0) "-" ++ Environment.git_sha_short else ""
     else
-        "/bun-node-debug";
+        "bun-node-debug";
+
+    fn bunNodeDir(buf: *bun.PathBuffer) [:0]const u8 {
+        if (comptime Environment.isAndroid) {
+            return bun.path.joinAbsStringBufZ(
+                bun.fs.FileSystem.RealFS.tmpdirPath(),
+                buf,
+                &.{bun_node_dir_name},
+                .auto,
+            );
+        }
+
+        return switch (Environment.os) {
+            .windows => @compileError("Do not use RunCommand.bunNodeDir on Windows"),
+            .mac => "/private/tmp/" ++ bun_node_dir_name,
+            else => "/tmp/" ++ bun_node_dir_name,
+        };
+    }
 
     pub fn bunNodeFileUtf8(allocator: std.mem.Allocator) ![:0]const u8 {
-        if (!Environment.isWindows) return bun_node_dir;
+        if (!Environment.isWindows) {
+            if (comptime Environment.isAndroid) {
+                var dir_buf: bun.PathBuffer = undefined;
+                var file_buf: bun.PathBuffer = undefined;
+                const dir = bunNodeDir(&dir_buf);
+                return try allocator.dupeZ(u8, bun.path.joinAbsStringBuf(dir, &file_buf, &.{"node"}, .auto));
+            }
+
+            return switch (Environment.os) {
+                .mac => "/private/tmp/" ++ bun_node_dir_name ++ "/node",
+                else => "/tmp/" ++ bun_node_dir_name ++ "/node",
+            };
+        }
+
         var temp_path_buffer: bun.WPathBuffer = undefined;
         var target_path_buffer: bun.PathBuffer = undefined;
         const len = bun.windows.GetTempPathW(
@@ -668,10 +689,17 @@ pub const RunCommand = struct {
                 argv0 = bun.argv[0];
             }
 
+            var bun_node_dir_buf: bun.PathBuffer = undefined;
+            var node_path_buf: bun.PathBuffer = undefined;
+            var bun_path_buf: bun.PathBuffer = undefined;
+            const bun_node_dir = bunNodeDir(&bun_node_dir_buf);
             if (Environment.isDebug) {
                 std.fs.deleteTreeAbsolute(bun_node_dir) catch {};
             }
-            const paths = .{ bun_node_dir ++ "/node", bun_node_dir ++ "/bun" };
+            const paths = .{
+                bun.path.joinAbsStringBufZ(bun_node_dir, &node_path_buf, &.{"node"}, .auto),
+                bun.path.joinAbsStringBufZ(bun_node_dir, &bun_path_buf, &.{"bun"}, .auto),
+            };
             inline for (paths) |path| {
                 var retried = false;
                 while (true) {
@@ -697,7 +725,8 @@ pub const RunCommand = struct {
             // The reason for the extra delim is because we are going to append the system PATH
             // later on. this is done by the caller, and explains why we are adding bun_node_dir
             // to the end of the path slice rather than the start.
-            try PATH.appendSlice(bun_node_dir ++ .{std.fs.path.delimiter});
+            try PATH.appendSlice(bun_node_dir);
+            try PATH.append(std.fs.path.delimiter);
         } else if (Environment.isWindows) {
             var target_path_buffer: bun.WPathBuffer = undefined;
 

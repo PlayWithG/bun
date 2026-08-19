@@ -9,7 +9,7 @@
 import { execSync, spawnSync } from "node:child_process";
 import { accessSync, constants, existsSync, readdirSync, statSync } from "node:fs";
 import { homedir } from "node:os";
-import { delimiter, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join } from "node:path";
 import type { Arch, OS, Toolchain } from "./config.ts";
 import { BuildError } from "./error.ts";
 
@@ -113,12 +113,32 @@ interface Rejection {
  * using Bun APIs). Must be the actual bun binary — NOT process.execPath,
  * since configure may run under node.
  *
- * Search order: ~/.bun/bin (curl-install location), then PATH, then
- * process.execPath only if it's actually bun. CI agents pin an old system
+ * Search order: BUN_BUILD_BOOTSTRAP when set, ~/.bun/bin (curl-install
+ * location), the current Bun process, then PATH. CI agents pin an old system
  * bun but codegen scripts need newer CLI flags, so the user install goes
- * first.
+ * first when no explicit bootstrap is provided.
+ *
+ * BUN_BUILD_BOOTSTRAP is an explicit escape hatch for reproducible builds. It
+ * must name a non-empty, absolute, executable regular file. Invalid values
+ * fail immediately instead of falling through to another Bun installation.
  */
 export function findBun(os: OS): string {
+  const bootstrap = process.env.BUN_BUILD_BOOTSTRAP;
+  if (bootstrap !== undefined) {
+    const hint =
+      "Set BUN_BUILD_BOOTSTRAP to an absolute executable Bun file, or unset it to use ~/.bun/bin/bun, the current Bun process, and PATH.";
+    if (bootstrap.trim().length === 0) {
+      throw new BuildError("BUN_BUILD_BOOTSTRAP must not be empty", { hint });
+    }
+    if (!isAbsolute(bootstrap)) {
+      throw new BuildError(`BUN_BUILD_BOOTSTRAP must be an absolute path: ${bootstrap}`, { hint });
+    }
+    if (!isExecutable(bootstrap)) {
+      throw new BuildError(`BUN_BUILD_BOOTSTRAP is not an executable regular file: ${bootstrap}`, { hint });
+    }
+    return bootstrap;
+  }
+
   const exe = os === "windows" ? "bun.exe" : "bun";
   const userBun = join(homedir(), ".bun", "bin", exe);
   if (isExecutable(userBun)) return userBun;
@@ -518,6 +538,7 @@ export interface CargoToolchain {
   cargo: string;
   cargoHome: string;
   rustupHome: string;
+  rustup: string | undefined;
 }
 
 /**
@@ -542,11 +563,20 @@ export function findCargo(hostOs: OS): CargoToolchain | undefined {
   })?.path;
   if (cargo === undefined) return undefined;
 
+  // Rustup usually ships beside cargo, but standalone cargo installations may
+  // have no rustup at all. Search the cargo sibling first, then the standard
+  // Cargo home, then PATH through the same discovery logic.
+  const rustup = findTool({
+    names: ["rustup"],
+    paths: [dirname(cargo), join(cargoHome, "bin")],
+    required: false,
+  })?.path;
+
   // Suppress unused warning for hostOs — kept in signature for future
   // host-specific path resolution (e.g. %PROGRAMFILES% probing on win32).
   void hostOs;
 
-  return { cargo, cargoHome, rustupHome };
+  return { cargo, cargoHome, rustupHome, rustup };
 }
 
 /**

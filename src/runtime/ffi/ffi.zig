@@ -246,7 +246,24 @@ pub const FFI = struct {
         var cached_default_system_library_dir: [:0]const u8 = "";
         var cached_default_system_include_dir_once = std.once(getSystemRootDirOnce);
         fn getSystemRootDirOnce() void {
-            if (Environment.isMac) {
+            if (Environment.isAndroid) {
+                const library_dir = if (Environment.isAarch64) "/system/lib64" else "/system/lib";
+                if (bun.FD.cwd().directoryExistsAt(library_dir).isTrue()) {
+                    cached_default_system_library_dir = library_dir;
+                }
+
+                var include_path_buf: bun.PathBuffer = undefined;
+                if (bun.getenvZ("PREFIX")) |prefix| {
+                    if (prefix.len > 0 and std.fs.path.isAbsolute(prefix) and
+                        prefix.len <= include_path_buf.len - "/include".len - 1)
+                    {
+                        const include_dir = bun.path.joinAbsStringBufZ(prefix, &include_path_buf, &.{"include"}, .posix);
+                        if (bun.FD.cwd().directoryExistsAt(include_dir).isTrue()) {
+                            cached_default_system_include_dir = bun.default_allocator.dupeZ(u8, include_dir) catch return;
+                        }
+                    }
+                }
+            } else if (Environment.isMac) {
                 var which_buf: [bun.MAX_PATH_BYTES]u8 = undefined;
 
                 var process = bun.spawnSync(&.{

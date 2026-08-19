@@ -354,6 +354,20 @@ describe("spawnSync()", () => {
     const { stdout } = spawnSync("bun", ["-v"], { encoding: "utf8" });
     expect(isValidSemver(stdout.trim())).toBe(true);
   });
+
+  it.if(!isWindows)("should preserve piped maxBuffer output after the event loop advances", async () => {
+    const result = spawnSync(shellExe(), ["-c", "printf output"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+      maxBuffer: 1024 * 1024,
+    });
+
+    expect(result.stdout).toBe("output");
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+
+    await new Promise<void>(resolve => setImmediate(resolve));
+  });
 });
 
 describe("execFileSync()", () => {

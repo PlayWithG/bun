@@ -20,7 +20,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { ar, cc, cxx, nasm } from "./compile.ts";
 import type { BuildType, Config } from "./config.ts";
 import { assert } from "./error.ts";
@@ -589,19 +589,20 @@ export function registerDepRules(n: Ninja, cfg: Config): void {
       pool: "dep",
     });
     // Cross-compile variant: ensure the rust std for the target triple is
-    // installed before building. CI images install rustup as a different
-    // user/HOME than the build runs under, so the target may be missing
-    // even though `rustup target add` ran at image-build time. Idempotent;
-    // chained at the ninja-shell level (no nested quoting).
-    const rustup = q(join(dirname(cfg.cargo), `rustup${cfg.host.exeSuffix}`));
-    n.rule("dep_cargo_cross", {
-      command:
-        `${stream} $env ${rustup} target add $rust_target && ` +
-        `${stream} --cwd=$manifestdir $env ${q(cfg.cargo)} build $args`,
-      description: "cargo $name ($rust_target)",
-      restat: true,
-      pool: "dep",
-    });
+    // installed before building. Standalone Cargo installations may already
+    // ship the target std without Rustup, so only emit this rule when Rustup
+    // was actually discovered.
+    if (cfg.rustup !== undefined) {
+      const rustup = q(cfg.rustup);
+      n.rule("dep_cargo_cross", {
+        command:
+          `${stream} $env ${rustup} target add $rust_target && ` +
+          `${stream} --cwd=$manifestdir $env ${q(cfg.cargo)} build $args`,
+        description: "cargo $name ($rust_target)",
+        restat: true,
+        pool: "dep",
+      });
+    }
   }
 
   // preBuild: runs an arbitrary command before cmake configure. Used for
@@ -1391,7 +1392,8 @@ function emitCargo(n: Ninja, cfg: Config, name: string, spec: CargoBuild, input:
   // dep_cargo_cross prepends `rustup target add` for Tier 2 cross targets.
   // Tier 3 targets (buildStd=true) have no prebuilt std, so target-add would
   // fail — they use plain dep_cargo with -Zbuild-std instead.
-  const cross = cfg.crossTarget !== undefined && spec.rustTarget !== undefined && !spec.buildStd;
+  const cross =
+    cfg.rustup !== undefined && cfg.crossTarget !== undefined && spec.rustTarget !== undefined && !spec.buildStd;
   n.build({
     outputs: [lib],
     rule: cross ? "dep_cargo_cross" : "dep_cargo",

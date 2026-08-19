@@ -153,13 +153,13 @@ pub const MinifyRenamer = struct {
         return renamer;
     }
 
-    pub fn deinit(this: *MinifyRenamer, allocator: std.mem.Allocator) void {
+    pub fn deinit(this: *MinifyRenamer, _: std.mem.Allocator) void {
         for (&this.slots.values) |*val| {
             val.deinit();
         }
-        this.reserved_names.deinit(allocator);
-        this.top_level_symbol_to_slot.deinit(allocator);
-        allocator.destroy(this);
+        this.reserved_names.deinit(this.allocator);
+        this.top_level_symbol_to_slot.deinit(this.allocator);
+        this.allocator.destroy(this);
     }
 
     pub fn toRenamer(this: *MinifyRenamer) Renamer {

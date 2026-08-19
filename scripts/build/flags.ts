@@ -13,7 +13,7 @@
 
 import { join } from "node:path";
 import { bunExeName, type Config } from "./config.ts";
-import { slash } from "./shell.ts";
+import { quote, slash } from "./shell.ts";
 
 export type FlagValue = string | string[] | ((cfg: Config) => string | string[]);
 
@@ -849,13 +849,19 @@ export const linkerFlags: Flag[] = [
       "--rtlib=compiler-rt",
       "--unwindlib=libunwind",
       "-stdlib=libc++",
-      "-static-libstdc++",
+      // Termux clang injects the NDK sysroot into DT_RUNPATH on Android hosts.
+      ...(c.host.android ? ["-fno-termux-rpath"] : []),
       // -l:libunwind.a (driver-emitted) searches -L paths; point at the NDK's
       // own per-arch runtime dir so it resolves regardless of resource-dir layout.
       `-L${join(c.androidNdkRuntimeDir!, c.arm64 ? "aarch64" : "x86_64")}`,
+      // libc++ lives beside the target bionic libraries in the sysroot. NDKs
+      // provide a static archive; Termux's sysroot may provide only the shared
+      // runtime, so select the linker mode from the resolved capability.
+      `-L${c.androidLibcxxDir!}`,
+      ...(c.androidLibcxxStatic ? ["-static-libstdc++"] : [quote(`-Wl,-rpath,${c.androidLibcxxRpath!}`, false)]),
     ],
     when: c => c.linux && c.abi === "android",
-    desc: "Android link: target/sysroot + compiler-rt/libunwind + static libc++",
+    desc: "Android link: target/sysroot + compiler-rt/libunwind + capability-selected libc++",
   },
   {
     // Paired with compile-side -fno-unwind-tables above.

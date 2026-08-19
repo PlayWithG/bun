@@ -106,7 +106,7 @@ const LibInfo = struct {
             }
             // Drop the KeepAlive + resolver ref that `GetAddrInfoRequest.init` took.
             request.head.deinit();
-            this.vm.allocator.destroy(request);
+            request.head.globalThis.allocator().destroy(request);
 
             return promise_value;
         }
@@ -389,7 +389,7 @@ pub fn ResolveInfoRequest(comptime cares_type: type, comptime type_name: []const
             }
 
             var head = this.head;
-            bun.default_allocator.destroy(this);
+            head.globalThis.allocator().destroy(this);
 
             head.processResolve(err_, timeout, result);
         }
@@ -491,7 +491,7 @@ pub const GetHostByAddrInfoRequest = struct {
         }
 
         var head = this.head;
-        bun.default_allocator.destroy(this);
+        head.globalThis.allocator().destroy(this);
 
         head.processResolve(err_, timeout, result);
     }
@@ -645,7 +645,7 @@ pub const GetNameInfoRequest = struct {
         }
 
         var head = this.head;
-        bun.default_allocator.destroy(this);
+        head.globalThis.allocator().destroy(this);
 
         head.processResolve(err_, timeout, result);
     }
@@ -750,7 +750,7 @@ pub const GetAddrInfoRequest = struct {
         }
 
         var head = this.head;
-        bun.default_allocator.destroy(this);
+        head.globalThis.allocator().destroy(this);
         head.processGetAddrInfoNative(status, addr_info);
     }
 
@@ -855,7 +855,7 @@ pub const GetAddrInfoRequest = struct {
                     }
                 }
                 var head = this.head;
-                bun.default_allocator.destroy(this);
+                head.globalThis.allocator().destroy(this);
                 head.onCompleteNative(any);
             },
             .err => |err| {
@@ -884,7 +884,7 @@ pub const GetAddrInfoRequest = struct {
         }
 
         var head = this.head;
-        bun.default_allocator.destroy(this);
+        head.globalThis.allocator().destroy(this);
 
         head.processGetAddrInfo(err_, timeout, result);
     }
@@ -2174,7 +2174,7 @@ pub const Resolver = struct {
         var addr: *cares_type = result orelse {
             var pending: ?*CAresLookup(cares_type, lookup_name) = key.lookup.head.next;
             key.lookup.head.processResolve(err, timeout, null);
-            bun.default_allocator.destroy(key.lookup);
+            key.lookup.head.globalThis.allocator().destroy(key.lookup);
 
             while (pending) |value| {
                 pending = value.next;
@@ -2189,7 +2189,7 @@ pub const Resolver = struct {
         defer addr.deinit();
         array.ensureStillAlive();
         key.lookup.head.onComplete(array);
-        bun.default_allocator.destroy(key.lookup);
+        key.lookup.head.globalThis.allocator().destroy(key.lookup);
 
         array.ensureStillAlive();
 
@@ -2218,7 +2218,7 @@ pub const Resolver = struct {
         var addr = result orelse {
             var pending: ?*DNSLookup = key.lookup.head.next;
             key.lookup.head.processGetAddrInfo(err, timeout, null);
-            bun.default_allocator.destroy(key.lookup);
+            key.lookup.head.globalThis.allocator().destroy(key.lookup);
 
             while (pending) |value| {
                 pending = value.next;
@@ -2233,7 +2233,7 @@ pub const Resolver = struct {
         defer addr.deinit();
         array.ensureStillAlive();
         key.lookup.head.onCompleteWithArray(array);
-        bun.default_allocator.destroy(key.lookup);
+        key.lookup.head.globalThis.allocator().destroy(key.lookup);
 
         array.ensureStillAlive();
         // std.c.addrinfo
@@ -2265,7 +2265,7 @@ pub const Resolver = struct {
             var pending: ?*DNSLookup = key.lookup.head.next;
             var head = key.lookup.head;
             head.processGetAddrInfoNative(err, null);
-            bun.default_allocator.destroy(key.lookup);
+            key.lookup.head.globalThis.allocator().destroy(key.lookup);
 
             while (pending) |value| {
                 pending = value.next;
@@ -2280,7 +2280,7 @@ pub const Resolver = struct {
         {
             array.ensureStillAlive();
             key.lookup.head.onCompleteWithArray(array);
-            bun.default_allocator.destroy(key.lookup);
+            key.lookup.head.globalThis.allocator().destroy(key.lookup);
             array.ensureStillAlive();
         }
 
@@ -2311,7 +2311,7 @@ pub const Resolver = struct {
         var addr = result orelse {
             var pending: ?*CAresReverse = key.lookup.head.next;
             key.lookup.head.processResolve(err, timeout, null);
-            bun.default_allocator.destroy(key.lookup);
+            key.lookup.head.globalThis.allocator().destroy(key.lookup);
 
             while (pending) |value| {
                 pending = value.next;
@@ -2328,7 +2328,7 @@ pub const Resolver = struct {
         var array = addr.toJSResponse(this.vm.allocator, prev_global, "") catch .zero; // TODO: properly propagate exception upwards
         array.ensureStillAlive();
         key.lookup.head.onComplete(array);
-        bun.default_allocator.destroy(key.lookup);
+        key.lookup.head.globalThis.allocator().destroy(key.lookup);
 
         array.ensureStillAlive();
 
@@ -2357,7 +2357,7 @@ pub const Resolver = struct {
         var name_info = result orelse {
             var pending: ?*CAresNameInfo = key.lookup.head.next;
             key.lookup.head.processResolve(err, timeout, null);
-            bun.default_allocator.destroy(key.lookup);
+            key.lookup.head.globalThis.allocator().destroy(key.lookup);
 
             while (pending) |value| {
                 pending = value.next;
@@ -2372,7 +2372,7 @@ pub const Resolver = struct {
         var array = name_info.toJSResponse(this.vm.allocator, prev_global) catch .zero; // TODO: properly propagate exception upwards
         array.ensureStillAlive();
         key.lookup.head.onComplete(array);
-        bun.default_allocator.destroy(key.lookup);
+        key.lookup.head.globalThis.allocator().destroy(key.lookup);
 
         array.ensureStillAlive();
 

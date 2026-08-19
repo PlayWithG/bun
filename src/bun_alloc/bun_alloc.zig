@@ -2,6 +2,14 @@ pub const c_allocator = basic.c_allocator;
 pub const z_allocator = basic.z_allocator;
 pub const freeWithoutSize = basic.freeWithoutSize;
 pub const mimalloc = @import("../mimalloc_sys/mimalloc.zig");
+
+/// Free memory transferred from `bun.default_allocator` to a C/C++ owner.
+/// The active implementation is mimalloc or libc depending on `use_mimalloc`.
+/// Callers must not use this for foreign pointers or empty-slice sentinels.
+pub export fn Bun__freeDefaultAllocator(ptr: ?*anyopaque) callconv(.c) void {
+    freeWithoutSize(ptr);
+}
+
 pub const MimallocArena = @import("./MimallocArena.zig");
 
 pub const allocation_scope = @import("./allocation_scope.zig");

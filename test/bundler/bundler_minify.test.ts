@@ -1,8 +1,74 @@
-import { describe, expect } from "bun:test";
-import { normalizeBunSnapshot } from "harness";
+import { describe, expect, test } from "bun:test";
+import { bunEnv, bunExe, normalizeBunSnapshot, tempDir } from "harness";
 import { itBundled } from "./expectBundled";
 
 describe("bundler", () => {
+  test("minify/CSSCliOutputSurvivesChildProcess", async () => {
+    using dir = tempDir("bundler-minify-css", {
+      "entry.css": `.button { color: red; margin: 0 1px; }`,
+    });
+
+    for (const [minify, outputName] of [
+      [false, "out.css"],
+      [true, "out.min.css"],
+    ] as const) {
+      await using proc = Bun.spawn({
+        cmd: [bunExe(), "build", "entry.css", `--outfile=${outputName}`, ...(minify ? ["--minify"] : [])],
+        cwd: String(dir),
+        env: bunEnv,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+
+      const [, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+      const outputFile = Bun.file(`${dir}/${outputName}`);
+      const output = (await outputFile.exists()) ? await outputFile.text() : "";
+      expect(stderr).toBe("");
+      expect(output.length).toBeGreaterThan(0);
+      expect(output.replace(/\s/g, "")).toContain(".button{color:red");
+      expect(exitCode).toBe(0);
+    }
+  });
+
+  test("minify/BunBuildIdentifiersProducesUsableOutput", async () => {
+    using dir = tempDir("bundler-minify-identifiers", {
+      "entry.ts": `
+        function computeAnswer(firstValue: number, secondValue: number) {
+          const answer = firstValue + secondValue;
+          return answer;
+        }
+
+        console.log("MINIFY_OK", computeAnswer(40, 2));
+      `,
+    });
+
+    await using proc = Bun.spawn({
+      cmd: [
+        bunExe(),
+        "-e",
+        `
+          const result = await Bun.build({
+            entrypoints: ["entry.ts"],
+            outdir: "out",
+            target: "bun",
+            minify: { identifiers: true },
+          });
+          if (!result.success) throw new AggregateError(result.logs);
+          await import("./out/entry.js");
+        `,
+      ],
+      cwd: String(dir),
+      env: bunEnv,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+    expect(stdout).toBe("MINIFY_OK 42\n");
+    expect(stderr).toBe("");
+    expect(exitCode).toBe(0);
+  });
+
   itBundled("minify/TemplateStringFolding", {
     files: {
       "/entry.js": /* js */ `

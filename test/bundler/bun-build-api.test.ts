@@ -204,6 +204,39 @@ describe("Bun.build", () => {
     Bun.gc(true);
   });
 
+  test("file-backed BuildArtifact survives dropped references and GC", async () => {
+    const fixture = tempDirWithFiles("build-outdir-gc", {
+      "entry.js": "export default 1;",
+    });
+
+    await using proc = Bun.spawn({
+      cmd: [
+        bunExe(),
+        "-e",
+        `
+          let build = await Bun.build({
+            entrypoints: [${JSON.stringify(join(fixture, "entry.js"))}],
+            outdir: ${JSON.stringify(join(fixture, "out"))},
+          });
+          if (!build.success) throw new AggregateError(build.logs, "build failed");
+          if (build.outputs.length !== 1) throw new Error("expected one output");
+          build.outputs.length = 0;
+          build = undefined;
+          Bun.gc(true);
+          console.log("FILE_BACKED_BUILDARTIFACT_GC_OK");
+        `,
+      ],
+      env: bunEnv,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+
+    const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+    expect(stdout.trim()).toBe("FILE_BACKED_BUILDARTIFACT_GC_OK");
+    expect(stderr).toBe("");
+    expect(exitCode).toBe(0);
+  });
+
   test("BuildArtifact properties", async () => {
     Bun.gc(true);
     const outdir = tempDirWithFiles("build-artifact-properties", {

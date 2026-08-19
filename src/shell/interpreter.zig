@@ -1257,6 +1257,15 @@ pub const Interpreter = struct {
     fn ioToJSValue(globalThis: *JSGlobalObject, buf: *bun.ByteList) JSValue {
         const bytelist = buf.*;
         buf.* = .{};
+
+        if (comptime bun.Environment.isAndroid) {
+            // Shell output is owned by `bytelist`. Copy it into a JSC-managed
+            // Buffer before releasing the allocator-owned slice; the zero-copy
+            // external backing-store path is unsafe on Android.
+            defer bun.default_allocator.free(@constCast(bytelist.slice()));
+            return jsc.ArrayBuffer.createBuffer(globalThis, bytelist.slice()) catch .zero;
+        }
+
         const buffer: jsc.Node.Buffer = .{
             .allocator = bun.default_allocator,
             .buffer = jsc.ArrayBuffer.fromBytes(@constCast(bytelist.slice()), .Uint8Array),

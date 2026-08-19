@@ -864,6 +864,8 @@ pub const PackageInstall = struct {
         }
     };
 
+    const android_hardlink_access_denied = error.AndroidHardlinkAccessDenied;
+
     fn installWithHardlink(this: *@This(), dest_dir: std.fs.Dir) !Result {
         var state = InstallDirState{};
         const res = this.initInstallDir(&state, dest_dir, .hardlink);
@@ -890,12 +892,22 @@ pub const PackageInstall = struct {
                             },
                             .file => {
                                 std.posix.linkatZ(entry.dir.cast(), entry.basename, destination_dir.fd, entry.path, 0) catch |err| {
+                                    if (comptime Environment.isAndroid) {
+                                        if (err == error.AccessDenied) return android_hardlink_access_denied;
+                                    }
+
                                     if (err != error.PathAlreadyExists) {
                                         return err;
                                     }
 
                                     std.posix.unlinkatZ(destination_dir.fd, entry.path, 0) catch {};
-                                    try std.posix.linkatZ(entry.dir.cast(), entry.basename, destination_dir.fd, entry.path, 0);
+                                    std.posix.linkatZ(entry.dir.cast(), entry.basename, destination_dir.fd, entry.path, 0) catch |retry_err| {
+                                        if (comptime Environment.isAndroid) {
+                                            if (retry_err == error.AccessDenied) return android_hardlink_access_denied;
+                                        }
+
+                                        return retry_err;
+                                    };
                                 };
 
                                 real_file_count += 1;
@@ -954,7 +966,7 @@ pub const PackageInstall = struct {
                 if (err == error.FailedToCopyFile) {
                     return Result.fail(err, .copying_files, @errorReturnTrace());
                 }
-            } else if (err == error.NotSameFileSystem or err == error.ENXIO) {
+            } else if (err == error.NotSameFileSystem or err == error.ENXIO or err == android_hardlink_access_denied) {
                 return err;
             }
 
@@ -1448,7 +1460,10 @@ pub const PackageInstall = struct {
                     return result;
                 } else |err| outer: {
                     if (comptime !Environment.isWindows) {
-                        if (err == error.NotSameFileSystem) {
+                        if (err == error.NotSameFileSystem or err == android_hardlink_access_denied) {
+                            destination_dir.deleteTree(bun.span(this.destination_dir_subpath)) catch |cleanup_err| {
+                                return Result.fail(cleanup_err, .copying_files, @errorReturnTrace());
+                            };
                             supported_method = .copyfile;
                             supported_method_to_use = .copyfile;
                             break :outer;

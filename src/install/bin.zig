@@ -615,6 +615,78 @@ pub const Bin = extern struct {
             }
         }
 
+        fn isShebangWhitespace(c: u8) bool {
+            return c == ' ' or c == '\t';
+        }
+
+        fn hasPathWhitespace(value: []const u8) bool {
+            for (value) |c| {
+                if (std.ascii.isWhitespace(c)) return true;
+            }
+            return false;
+        }
+
+        fn rewriteAndroidEnvShebang(line: []const u8, buf: []u8) ?[]const u8 {
+            if (comptime !Environment.isAndroid) return null;
+
+            const env_prefix = "#!/usr/bin/env";
+            if (!strings.hasPrefixComptime(line, env_prefix)) return null;
+
+            var command = line[env_prefix.len..];
+            if (command.len == 0 or !isShebangWhitespace(command[0])) return null;
+            while (command.len > 0 and isShebangWhitespace(command[0])) command = command[1..];
+
+            var uses_split = false;
+            if (strings.hasPrefixComptime(command, "-S") and
+                (command.len == 2 or isShebangWhitespace(command[2])))
+            {
+                uses_split = true;
+                command = command[2..];
+                while (command.len > 0 and isShebangWhitespace(command[0])) command = command[1..];
+            }
+
+            const command_len: usize = if (strings.hasPrefixComptime(command, "bun") and
+                (command.len == 3 or isShebangWhitespace(command[3])))
+                3
+            else if (strings.hasPrefixComptime(command, "node") and
+                (command.len == 4 or isShebangWhitespace(command[4])))
+                4
+            else
+                return null;
+
+            // Toybox env cannot safely represent extra arguments without -S.
+            if (!uses_split) {
+                var trailing = command[command_len..];
+                while (trailing.len > 0 and isShebangWhitespace(trailing[0])) trailing = trailing[1..];
+                if (trailing.len > 0) return null;
+            }
+
+            var env_path_buf: [bun.MAX_PATH_BYTES]u8 = undefined;
+            const env_path: ?[]const u8 = brk: {
+                if (bun.getenvZ("PREFIX")) |prefix| {
+                    if (prefix.len > 0 and std.fs.path.isAbsolute(prefix) and
+                        !hasPathWhitespace(prefix) and
+                        prefix.len <= env_path_buf.len - "/bin/env".len - 1)
+                    {
+                        const candidate = path.joinAbsStringBufZ(prefix, &env_path_buf, &.{ "bin", "env" }, .auto);
+                        if (bun.sys.isExecutableFilePath(candidate)) break :brk candidate[0..candidate.len];
+                    }
+                }
+
+                if (uses_split) break :brk null;
+                break :brk "/system/bin/env";
+            };
+            const valid_env_path = env_path orelse return null;
+
+            const new_len = 2 + valid_env_path.len + line[env_prefix.len..].len;
+            if (new_len > buf.len) return null;
+
+            @memcpy(buf[0..2], line[0..2]);
+            @memcpy(buf[2 .. 2 + valid_env_path.len], valid_env_path);
+            @memcpy(buf[2 + valid_env_path.len .. new_len], line[env_prefix.len..]);
+            return buf[0..new_len];
+        }
+
         fn tryNormalizeShebang(abs_target: [:0]const u8) void {
             var shebang_buf: [2048]u8 = undefined;
 
@@ -633,7 +705,16 @@ pub const Bin = extern struct {
 
             const newline = strings.indexOfChar(chunk, '\n') orelse return;
             const chunk_without_newline = chunk[0..newline];
-            if (!(chunk_without_newline.len > 0 and chunk_without_newline[chunk_without_newline.len - 1] == '\r')) {
+            const shebang_without_cr = if (chunk_without_newline.len > 0 and chunk_without_newline[chunk_without_newline.len - 1] == '\r')
+                chunk_without_newline[0 .. chunk_without_newline.len - 1]
+            else
+                chunk_without_newline;
+            var rewritten_shebang_buf: [bun.MAX_PATH_BYTES]u8 = undefined;
+            const rewritten_shebang: ?[]const u8 = if (comptime Environment.isAndroid)
+                rewriteAndroidEnvShebang(shebang_without_cr, &rewritten_shebang_buf)
+            else
+                null;
+            if (rewritten_shebang == null and shebang_without_cr.len == chunk_without_newline.len) {
                 // Nothing to do!
                 return;
             }
@@ -681,8 +762,8 @@ pub const Bin = extern struct {
                 const tmpfile = bun.sys.File.openat(.cwd(), tmppath, bun.O.WRONLY | bun.O.CREAT | bun.O.TRUNC, original_mode).unwrap() catch return;
                 defer tmpfile.close();
 
-                // Write the corrected shebang (without \r)
-                tmpfile.writeAll(chunk_without_newline[0 .. chunk_without_newline.len - 1]).unwrap() catch return;
+                // Write the corrected shebang, keeping all package arguments after the interpreter.
+                tmpfile.writeAll(rewritten_shebang orelse shebang_without_cr).unwrap() catch return;
                 tmpfile.writeAll("\n").unwrap() catch return;
 
                 // Write the rest of the file (after the newline)
@@ -691,10 +772,10 @@ pub const Bin = extern struct {
                 }
 
                 // Reapply original permissions (umask was applied during openat, so we need to restore)
-                _ = bun.sys.fchmodat(.cwd(), tmppath, @as(bun.Mode, @intCast(original_stat.mode & 0o777)), 0).unwrap() catch return;
+                _ = bun.sys.fchmodat(.cwd(), tmppath, @as(bun.Mode, @intCast(original_stat.mode & 0o7777)), 0).unwrap() catch return;
             }
 
-            // Atomic replace: rename temp file to original
+            // Atomic replacement swaps the target directory entry, so shared hardlink inodes stay untouched.
             switch (bun.sys.renameat(.cwd(), tmppath, .cwd(), abs_target)) {
                 .result => {
                     needs_unlink = false;

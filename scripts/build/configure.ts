@@ -74,6 +74,7 @@ export function resolveToolchain(): Toolchain {
     jsRuntime,
     esbuild,
     cargo: rust?.cargo,
+    rustup: rust?.rustup,
     cargoHome: rust?.cargoHome,
     rustupHome: rust?.rustupHome,
     msvcLinker,

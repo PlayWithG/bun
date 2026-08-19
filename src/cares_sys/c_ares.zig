@@ -480,12 +480,8 @@ pub const Channel = opaque {
 
         var opts = bun.zero(Options);
 
-        // Android note: c-ares can't auto-discover servers (no /etc/resolv.conf,
-        // no JNI), so it falls back to 127.0.0.1 and queries time out. We do
-        // NOT set ARES_FLAG_NO_DFLT_SVR here — that makes init fail with
-        // ENOSERVER, which breaks dns.setServers() (it needs an initialized
-        // channel to call ares_set_servers_ports). Letting the 127.0.0.1
-        // default stand means setServers() works as the documented workaround.
+        // Keep the default server enabled so dns.setServers() can replace it
+        // even when Android resolver discovery is unavailable.
         opts.flags = ARES_FLAG_NOCHECKRESP;
         opts.sock_state_cb = &SockStateWrap.onSockState;
         opts.sock_state_cb_data = @as(*anyopaque, @ptrCast(this));
@@ -502,6 +498,9 @@ pub const Channel = opaque {
         }
 
         this.channel = channel;
+        if (comptime bun.Environment.isAndroid) {
+            configureAndroidResolverServers(channel);
+        }
         return null;
     }
 
@@ -661,6 +660,123 @@ pub const Channel = opaque {
         );
     }
 };
+
+const android_resolver_config_max_bytes = 4 * 1024;
+const android_resolver_max_servers = 16;
+const android_resolver_max_server_length = 128;
+
+fn configureAndroidResolverServers(channel: *Channel) void {
+    var config_buf: [android_resolver_config_max_bytes]u8 = undefined;
+    var servers_buf: [android_resolver_config_max_bytes + 1]u8 = undefined;
+    var path_buf: bun.PathBuffer = undefined;
+    const resolv_conf_suffix = "/etc/resolv.conf";
+
+    if (bun.getenvZ("PREFIX")) |prefix| {
+        if (prefix.len > 0 and prefix[0] == '/' and prefix.len <= path_buf.len - resolv_conf_suffix.len - 1) {
+            const path = bun.path.joinAbsStringBufZ(prefix, &path_buf, &.{ "etc", "resolv.conf" }, .posix);
+            if (setAndroidResolverServersFromFile(channel, path, &config_buf, &servers_buf)) {
+                return;
+            }
+        }
+    }
+
+    _ = setAndroidResolverServersFromFile(channel, "/etc/resolv.conf", &config_buf, &servers_buf);
+}
+
+fn setAndroidResolverServersFromFile(
+    channel: *Channel,
+    path: [:0]const u8,
+    config_buf: *[android_resolver_config_max_bytes]u8,
+    servers_buf: *[android_resolver_config_max_bytes + 1]u8,
+) bool {
+    const file = bun.sys.File.open(path, bun.O.RDONLY, 0).unwrap() catch return false;
+    defer file.close();
+
+    const config_len = file.readAll(config_buf[0..]).unwrap() catch return false;
+    const servers = parseAndroidResolverServers(config_buf[0..config_len], servers_buf) orelse return false;
+    return ares_set_servers_csv(channel, servers.ptr) == ARES_SUCCESS;
+}
+
+fn parseAndroidResolverServers(
+    config: []const u8,
+    output: *[android_resolver_config_max_bytes + 1]u8,
+) ?[:0]const u8 {
+    var output_len: usize = 0;
+    var server_count: usize = 0;
+    var line_start: usize = 0;
+    var server_buf: [android_resolver_max_server_length + 1]u8 = undefined;
+
+    while (line_start < config.len) {
+        const line_remainder = config[line_start..];
+        const line_len = strings.indexOfChar(line_remainder, '\n') orelse line_remainder.len;
+        var line = line_remainder[0..line_len];
+        line_start += line_len;
+        if (line_start < config.len) {
+            line_start += 1;
+        }
+
+        for (line, 0..) |character, index| {
+            if (character == '#' or character == ';') {
+                line = line[0..index];
+                break;
+            }
+        }
+
+        line = strings.trimSpaces(line);
+        if (!strings.hasPrefixComptime(line, "nameserver") or
+            line.len == "nameserver".len or
+            !std.ascii.isWhitespace(line["nameserver".len]))
+        {
+            continue;
+        }
+
+        line = strings.trimSpaces(line["nameserver".len..]);
+        if (line.len == 0) {
+            continue;
+        }
+
+        var token_len: usize = 0;
+        while (token_len < line.len and !std.ascii.isWhitespace(line[token_len])) : (token_len += 1) {}
+        if (token_len == 0 or token_len > android_resolver_max_server_length or server_count >= android_resolver_max_servers) {
+            continue;
+        }
+
+        const token = line[0..token_len];
+        if (!isAndroidResolverAddress(token, &server_buf)) {
+            continue;
+        }
+
+        const separator_len: usize = if (output_len == 0) 0 else 1;
+        if (output_len + separator_len + token.len >= android_resolver_config_max_bytes + 1) {
+            continue;
+        }
+
+        if (separator_len != 0) {
+            output[output_len] = ',';
+            output_len += separator_len;
+        }
+        @memcpy(output[output_len .. output_len + token.len], token);
+        output_len += token.len;
+        server_count += 1;
+    }
+
+    if (server_count == 0) {
+        return null;
+    }
+
+    output[output_len] = 0;
+    return output[0..output_len :0];
+}
+
+fn isAndroidResolverAddress(token: []const u8, buf: *[android_resolver_max_server_length + 1]u8) bool {
+    @memcpy(buf[0..token.len], token);
+    buf[token.len] = 0;
+
+    var address: [16]u8 = undefined;
+    const address_z = buf[0..token.len :0].ptr;
+    return ares_inet_pton(AF.INET, address_z, &address) == 1 or
+        ares_inet_pton(AF.INET6, address_z, &address) == 1;
+}
 
 var ares_has_loaded = std.atomic.Value(bool).init(false);
 fn libraryInit() void {

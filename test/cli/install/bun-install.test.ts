@@ -10,13 +10,14 @@ import {
   joinP,
   readdirSorted,
   runBunInstall,
+  tempDir,
   tempDirWithFiles,
   textLockfile,
   toBeValidBin,
   toBeWorkspaceLink,
   toHaveBins,
 } from "harness";
-import { join, resolve, sep } from "path";
+import { dirname, join, resolve, sep } from "path";
 import {
   createTestContext,
   destroyTestContext,
@@ -65,6 +66,251 @@ async function withContext(
 const defaultOpts = { linker: "hoisted" as const };
 
 describe.concurrent("bun-install", () => {
+  test.skipIf(process.platform !== "android")(
+    "falls back to copyfile when Android denies package hardlinks",
+    async () => {
+      await withContext(defaultOpts, async ctx => {
+        const urls: string[] = [];
+        setContextHandler(ctx, dummyRegistryForContext(ctx, urls));
+        await writeFile(
+          join(ctx.package_dir, "package.json"),
+          JSON.stringify({
+            name: "foo",
+            version: "0.0.1",
+            dependencies: {
+              bar: "0.0.2",
+            },
+          }),
+        );
+
+        const { stdout, stderr, exited } = spawn({
+          cmd: [bunExe(), "install", "--backend=hardlink", "--no-cache"],
+          cwd: ctx.package_dir,
+          stdout: "pipe",
+          stderr: "pipe",
+          env,
+        });
+        const [, err, exitCode] = await Promise.all([stdout.text(), stderr.text(), exited]);
+
+        expect(err).not.toContain("error:");
+        expect(await file(join(ctx.package_dir, "node_modules", "bar", "package.json")).json()).toEqual({
+          name: "bar",
+          version: "0.0.2",
+        });
+        expect(exitCode).toBe(0);
+      });
+    },
+  );
+
+  test.skipIf(process.platform !== "android")(
+    "falls back to copyfile for isolated installs when Android denies package hardlinks",
+    async () => {
+      await withContext({ linker: "isolated" }, async ctx => {
+        const urls: string[] = [];
+        setContextHandler(ctx, dummyRegistryForContext(ctx, urls));
+        await writeFile(
+          join(ctx.package_dir, "package.json"),
+          JSON.stringify({
+            name: "foo",
+            version: "0.0.1",
+            dependencies: {
+              bar: "0.0.2",
+            },
+          }),
+        );
+
+        const { stdout, stderr, exited } = spawn({
+          cmd: [bunExe(), "install", "--linker=isolated", "--backend=hardlink", "--no-cache"],
+          cwd: ctx.package_dir,
+          stdout: "pipe",
+          stderr: "pipe",
+          env,
+        });
+        const [, err, exitCode] = await Promise.all([stdout.text(), stderr.text(), exited]);
+
+        expect(err).not.toContain("EACCES");
+        expect(err).not.toContain("error:");
+        expect(await file(join(ctx.package_dir, "node_modules", "bar", "package.json")).json()).toEqual({
+          name: "bar",
+          version: "0.0.2",
+        });
+        expect(exitCode).toBe(0);
+      });
+    },
+  );
+
+  test.skipIf(process.platform !== "android")(
+    "rewrites unavailable env shebangs for local and global package bins",
+    async () => {
+      using testDir = tempDir("android-package-bin-shebang", {});
+      const bunExecutable = bunExe();
+      using fixtureDir = tempDir("android-package-bin-fixture", {
+        "package.json": JSON.stringify({
+          name: "android-package-bin-fixture",
+          version: "1.0.0",
+          bin: {
+            "bun-bin": "bun-bin.js",
+            "node-bin": "node-bin.js",
+            "bun-s-bin": "bun-s-bin.js",
+            "crlf-bin": "crlf-bin.js",
+            "simple-args-bin": "simple-args-bin.js",
+            "absolute-bin": "absolute-bin.js",
+            "absolute-bun-bin": "absolute-bun-bin.js",
+            "unrelated-bin": "unrelated-bin.js",
+          },
+        }),
+        "bun-bin.js":
+          "#!/usr/bin/env bun\n" +
+          "console.log(JSON.stringify({ runtime: process.versions.bun ? 'bun' : 'node', args: process.argv.slice(2) }));\n" +
+          "process.exit(Number(process.argv.at(-1)));\n",
+        "node-bin.js":
+          "#!/usr/bin/env node\n" +
+          "console.log(JSON.stringify({ runtime: process.versions.bun ? 'bun' : 'node', args: process.argv.slice(2) }));\n" +
+          "process.exit(Number(process.argv.at(-1)));\n",
+        "bun-s-bin.js":
+          "#!/usr/bin/env -S bun --smol\n" +
+          "console.log(JSON.stringify({ runtime: process.versions.bun ? 'bun' : 'node', args: process.argv.slice(2) }));\n" +
+          "process.exit(Number(process.argv.at(-1)));\n",
+        "crlf-bin.js":
+          "#!/usr/bin/env bun\r\n" +
+          "console.log(JSON.stringify({ runtime: process.versions.bun ? 'bun' : 'node', args: process.argv.slice(2) }));\r\n" +
+          "process.exit(Number(process.argv.at(-1)));\r\n",
+        "simple-args-bin.js": "#!/usr/bin/env bun --smol\nconsole.log('simple args');\n",
+        "absolute-bin.js": "#!/system/bin/sh\nprintf absolute\n",
+        "absolute-bun-bin.js": `#!${bunExecutable}\nconsole.log('absolute');\n`,
+        "unrelated-bin.js": "#!/usr/bin/env python\nprint('unrelated')\n",
+      });
+      using localDir = tempDir("android-package-bin-local", {
+        "package.json": JSON.stringify({
+          name: "android-package-bin-local",
+          version: "1.0.0",
+          dependencies: {
+            "android-package-bin-fixture": `file:${fixtureDir}`,
+          },
+        }),
+      });
+      const globalRoot = join(String(testDir), "global-root");
+      const globalBinDir = join(String(testDir), "global-bin");
+      const fixtureFiles = [
+        "package.json",
+        "bun-bin.js",
+        "node-bin.js",
+        "bun-s-bin.js",
+        "crlf-bin.js",
+        "simple-args-bin.js",
+        "absolute-bin.js",
+        "absolute-bun-bin.js",
+        "unrelated-bin.js",
+      ];
+      const fixtureSource = new Map<string, string>();
+      for (const fixtureFile of fixtureFiles) {
+        fixtureSource.set(fixtureFile, await file(join(String(fixtureDir), fixtureFile)).text());
+      }
+      const prefixBinDir = process.env.PREFIX ? join(process.env.PREFIX, "bin") : "";
+      const termuxEnvPath = prefixBinDir ? join(prefixBinDir, "env") : "";
+      const hasTermuxEnv =
+        termuxEnvPath.length > 0 && (await exists(termuxEnvPath)) && ((await stat(termuxEnvPath)).mode & 0o111) !== 0;
+      const expectedEnvPath = hasTermuxEnv ? termuxEnvPath : "/system/bin/env";
+      const runEnv = {
+        ...env,
+        BUN_DEBUG_NO_DUMP: "1",
+        PATH: [dirname(bunExecutable), prefixBinDir, env.PATH ?? ""].filter(Boolean).join(sep),
+      };
+
+      async function installGlobalOrLocal(cwd: string, installEnv: NodeJS.Dict<string>, args: string[]) {
+        const install = spawn({
+          cmd: [bunExecutable, "install", ...args, "--backend=copyfile", "--no-cache"],
+          cwd,
+          stdout: "pipe",
+          stderr: "pipe",
+          env: installEnv,
+        });
+        const [stdout, stderr, exitCode] = await Promise.all([
+          install.stdout.text(),
+          install.stderr.text(),
+          install.exited,
+        ]);
+        expect(stderr).not.toContain("error:");
+        expect(stdout).not.toContain("error:");
+        expect(exitCode).toBe(0);
+      }
+
+      async function runBin(binPath: string, cwd: string) {
+        const proc = spawn({
+          cmd: [binPath, "first", "second", "17"],
+          cwd,
+          stdout: "pipe",
+          stderr: "pipe",
+          env: runEnv,
+        });
+        return Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+      }
+
+      await installGlobalOrLocal(String(localDir), runEnv, []);
+      await installGlobalOrLocal(
+        String(testDir),
+        {
+          ...runEnv,
+          BUN_INSTALL_GLOBAL_DIR: globalRoot,
+          BUN_INSTALL_BIN: globalBinDir,
+        },
+        ["--global", String(fixtureDir)],
+      );
+
+      const installRoots = [
+        { binDir: join(String(localDir), "node_modules", ".bin"), cwd: String(localDir) },
+        { binDir: globalBinDir, cwd: String(testDir) },
+      ];
+      for (const { binDir, cwd } of installRoots) {
+        for (const [binName, runtime] of [
+          ["bun-bin", "bun"],
+          ["node-bin", "node"],
+          ["crlf-bin", "bun"],
+        ] as const) {
+          const binPath = join(binDir, binName);
+          expect(await readlink(binPath)).toBeTruthy();
+          expect((await stat(binPath)).mode & 0o111).toBeGreaterThan(0);
+
+          const [stdout, stderr, exitCode] = await runBin(binPath, cwd);
+          expect(stdout).toBe(JSON.stringify({ runtime, args: ["first", "second", "17"] }) + "\n");
+          expect(stderr).toBe("");
+          expect(exitCode).toBe(17);
+          expect(await file(binPath).text()).toStartWith(`#!${expectedEnvPath} ${runtime}\n`);
+        }
+
+        const envSBinPath = join(binDir, "bun-s-bin");
+        expect(await readlink(envSBinPath)).toBeTruthy();
+        expect((await stat(envSBinPath)).mode & 0o111).toBeGreaterThan(0);
+        if (hasTermuxEnv) {
+          const [stdout, stderr, exitCode] = await runBin(envSBinPath, cwd);
+          expect(stdout).toBe(JSON.stringify({ runtime: "bun", args: ["first", "second", "17"] }) + "\n");
+          expect(stderr).toBe("");
+          expect(exitCode).toBe(17);
+        }
+        const expectedEnvSShebang = hasTermuxEnv
+          ? `#!${termuxEnvPath} -S bun --smol\n`
+          : "#!/usr/bin/env -S bun --smol\n";
+        expect(await file(envSBinPath).text()).toStartWith(expectedEnvSShebang);
+
+        for (const [binName, shebang] of [
+          ["absolute-bin", "#!/system/bin/sh\n"],
+          ["absolute-bun-bin", `#!${bunExecutable}\n`],
+          ["simple-args-bin", "#!/usr/bin/env bun --smol\n"],
+          ["unrelated-bin", "#!/usr/bin/env python\n"],
+        ] as const) {
+          const binPath = join(binDir, binName);
+          expect(await readlink(binPath)).toBeTruthy();
+          expect((await stat(binPath)).mode & 0o111).toBeGreaterThan(0);
+          expect(await file(binPath).text()).toStartWith(shebang);
+        }
+      }
+
+      for (const [fixtureFile, source] of fixtureSource) {
+        expect(await file(join(String(fixtureDir), fixtureFile)).text()).toBe(source);
+      }
+    },
+  );
+
   for (let input of ["abcdef", "65537", "-1"]) {
     it(`bun install --network-concurrency=${input} fails`, async () => {
       await withContext(defaultOpts, async ctx => {

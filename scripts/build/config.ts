@@ -40,6 +40,8 @@ export type WebKitMode = "prebuilt" | "local";
 export interface Host {
   os: OS;
   arch: Arch;
+  /** True when the build process itself is running on Android (for example Termux). */
+  android: boolean;
   /** ".exe" on a Windows host, "" elsewhere. Mirrors Config.exeSuffix (target). */
   exeSuffix: string;
 }
@@ -185,6 +187,8 @@ export interface Config {
   cmake: string;
   /** cargo executable. undefined when no rust toolchain is available. */
   cargo: string | undefined;
+  /** Rustup executable. undefined when standalone Cargo has no Rustup. */
+  rustup: string | undefined;
   /** CARGO_HOME — passed to cargo invocations for reproducibility. */
   cargoHome: string | undefined;
   /** RUSTUP_HOME — passed to cargo invocations for reproducibility. */
@@ -217,6 +221,14 @@ export interface Config {
   androidApiLevel: number | undefined;
   /** NDK compiler-rt/libunwind dir: `<ndk>/toolchains/llvm/prebuilt/<host>/lib/clang/<ver>/lib/linux`. */
   androidNdkRuntimeDir: string | undefined;
+  /** Target sysroot directory containing libc++_static.a/libc++_shared.so. */
+  androidLibcxxDir: string | undefined;
+  /** True when the target sysroot provides libc++_static.a. */
+  androidLibcxxStatic: boolean;
+  /** True when the target sysroot provides libc++_shared.so. */
+  androidLibcxxShared: boolean;
+  /** RPATH for shared libc++; undefined for static libc++ builds. */
+  androidLibcxxRpath: string | undefined;
   /** FreeBSD release version targeted (e.g. "14.3"). undefined when os != "freebsd". */
   freebsdVersion: string | undefined;
 
@@ -308,6 +320,8 @@ export interface Toolchain {
   cmake: string;
   /** Cargo executable. Required only if a rust dep (lolhtml) is being built. */
   cargo: string | undefined;
+  /** Rustup executable. Used only for cross-target installation. */
+  rustup: string | undefined;
   /** CARGO_HOME. Set alongside cargo; undefined when cargo is unavailable. */
   cargoHome: string | undefined;
   /** RUSTUP_HOME. Set alongside cargo; undefined when cargo is unavailable. */
@@ -344,20 +358,23 @@ export interface Toolchain {
  */
 export function detectHost(): Host {
   const plat = hostPlatform();
+  const android = plat === "android";
   const os: OS =
     plat === "linux"
       ? "linux"
-      : plat === "darwin"
-        ? "darwin"
-        : plat === "win32"
-          ? "windows"
-          : plat === "freebsd"
-            ? "freebsd"
-            : (() => {
-                throw new BuildError(`Unsupported host platform: ${plat}`, {
-                  hint: "Bun builds on linux, darwin, windows, or freebsd",
-                });
-              })();
+      : android
+        ? "linux"
+        : plat === "darwin"
+          ? "darwin"
+          : plat === "win32"
+            ? "windows"
+            : plat === "freebsd"
+              ? "freebsd"
+              : (() => {
+                  throw new BuildError(`Unsupported host platform: ${plat}`, {
+                    hint: "Bun builds on linux, android, darwin, windows, or freebsd",
+                  });
+                })();
 
   const a = hostArch();
   const arch: Arch =
@@ -369,7 +386,7 @@ export function detectHost(): Host {
             throw new BuildError(`Unsupported host architecture: ${a}`, { hint: "Bun builds on x64 or arm64" });
           })();
 
-  return { os, arch, exeSuffix: os === "windows" ? ".exe" : "" };
+  return { os, arch, android, exeSuffix: os === "windows" ? ".exe" : "" };
 }
 
 /**
@@ -431,6 +448,19 @@ export function detectAndroidNdk(): string | undefined {
   // Android Studio's sdkmanager puts NDKs under $ANDROID_HOME/ndk/<version>.
   // We don't pick one automatically — too easy to get a stale version.
   return undefined;
+}
+
+/**
+ * Choose the shared Android libc++ runtime search path.
+ * Native Termux can use its installed PREFIX/lib capability; cross-host builds
+ * use a path relative to the installed executable instead of the host path.
+ */
+export function androidSharedRuntimeRpath(nativeAndroidHost: boolean, prefix = process.env.PREFIX): string {
+  const prefixLibDir =
+    nativeAndroidHost && prefix !== undefined && isAbsolute(prefix) ? join(prefix, "lib") : undefined;
+  return prefixLibDir !== undefined && existsSync(join(prefixLibDir, "libc++_shared.so"))
+    ? prefixLibDir
+    : "$ORIGIN/../lib";
 }
 
 /**
@@ -616,10 +646,9 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
   // failure is loud ("cannot find -l:libatomic.a") and the fix is obvious.
   const staticLibatomic = partial.staticLibatomic ?? true;
 
-  // TinyCC: off on Windows ARM64 (not supported), Android (no upstream
-  // bionic support; FFI cc() falls back to dlopen-only), and FreeBSD
+  // TinyCC: off on Windows ARM64 (not supported) and FreeBSD
   // (oven-sh/tinycc has no FreeBSD target).
-  const tinycc = partial.tinycc ?? !((windows && arm64) || abi === "android" || freebsd);
+  const tinycc = partial.tinycc ?? !((windows && arm64) || freebsd);
 
   const valgrind = partial.valgrind ?? false;
   const fuzzilli = partial.fuzzilli ?? false;
@@ -665,6 +694,10 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
   let androidNdk: string | undefined;
   let androidApiLevel: number | undefined;
   let androidNdkRuntimeDir: string | undefined;
+  let androidLibcxxDir: string | undefined;
+  let androidLibcxxStatic = false;
+  let androidLibcxxShared = false;
+  let androidLibcxxRpath: string | undefined;
   if (abi === "android") {
     androidNdk =
       partial.androidNdk !== undefined
@@ -694,6 +727,23 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
     androidNdkRuntimeDir = join(ndkClangLib, ndkClangVer, "lib", "linux");
     const llvmArch = arch === "x64" ? "x86_64" : "aarch64";
     crossTarget = `${llvmArch}-unknown-linux-android${androidApiLevel}`;
+
+    const androidLibcxxArch = arch === "x64" ? "x86_64-linux-android" : "aarch64-linux-android";
+    androidLibcxxDir = join(sysroot, "usr", "lib", androidLibcxxArch);
+    const staticLibcxx = join(androidLibcxxDir, "libc++_static.a");
+    const sharedLibcxx = join(androidLibcxxDir, "libc++_shared.so");
+    androidLibcxxStatic = existsSync(staticLibcxx);
+    androidLibcxxShared = existsSync(sharedLibcxx);
+    if (!androidLibcxxStatic && !androidLibcxxShared) {
+      throw new BuildError(`Android libc++ runtime not found in ${androidLibcxxDir}`, {
+        hint: `Expected ${staticLibcxx} or ${sharedLibcxx}. Use an NDK sysroot that provides libc++_static.a or libc++_shared.so for ${androidLibcxxArch}.`,
+      });
+    }
+
+    if (androidLibcxxShared && !androidLibcxxStatic) {
+      androidLibcxxRpath = androidSharedRuntimeRpath(host.android);
+    }
+
     linkNdkRuntimesIntoClang(toolchain.cc, androidNdk, host, crossTarget);
   }
 
@@ -812,6 +862,7 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
     ccache: toolchain.ccache,
     cmake: toolchain.cmake,
     cargo: toolchain.cargo,
+    rustup: toolchain.rustup,
     cargoHome: toolchain.cargoHome,
     rustupHome: toolchain.rustupHome,
     msvcLinker: toolchain.msvcLinker,
@@ -825,6 +876,10 @@ export function resolveConfig(partial: PartialConfig, toolchain: Toolchain): Con
     androidNdk,
     androidApiLevel,
     androidNdkRuntimeDir,
+    androidLibcxxDir,
+    androidLibcxxStatic,
+    androidLibcxxShared,
+    androidLibcxxRpath,
     freebsdVersion,
     version,
     revision,

@@ -2,6 +2,9 @@
 import * as helpers from "../helpers";
 import { NamedType, Type } from "./internal/base";
 
+const BINDGENV2_LIST_OUTPUTS_BEGIN = "BUN_BINDGENV2_LIST_OUTPUTS_BEGIN";
+const BINDGENV2_LIST_OUTPUTS_END = "BUN_BINDGENV2_LIST_OUTPUTS_END";
+
 const USAGE = `\
 Usage: script.ts [options]
 
@@ -11,7 +14,7 @@ Options (all required):
   --codegen-path=<path>  Path to build/*/codegen
 
 Commands:
-  list-outputs  List files that will be generated, separated by semicolons
+  list-outputs  List generated files in a line-framed semicolon-separated payload
   generate      Generate all files
 `;
 
@@ -69,7 +72,9 @@ function listOutputs(): void {
     if (type.hasCppSource) outputs.push(cppSourcePath(type));
     if (type.hasZigSource) outputs.push(zigSourcePath(type));
   }
-  process.stdout.write(outputs.join(";"));
+  process.stdout.write(
+    `\n${BINDGENV2_LIST_OUTPUTS_BEGIN}\n${outputs.join(";")}\n${BINDGENV2_LIST_OUTPUTS_END}\n`,
+  );
 }
 
 function generate(): void {

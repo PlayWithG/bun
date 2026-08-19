@@ -96,6 +96,40 @@ describe.skipIf(isASAN || isFFIUnavailable)("given an add(a, b) function", () =>
   });
 }); // </given add(a, b) function>
 
+it.skipIf(process.platform !== "android" || isASAN || isFFIUnavailable)("cc() links against Android libc", async () => {
+  const dir = tempDirWithFiles("bun-ffi-cc-android-libc", {
+    "getpid.c": /* c */ `
+      #include <stdint.h>
+      extern int getpid(void);
+
+      int32_t get_process_id(void) {
+        return (int32_t)getpid();
+      }
+    `,
+  });
+
+  try {
+    const library = cc({
+      source: path.join(dir, "getpid.c"),
+      library: "c",
+      symbols: {
+        get_process_id: {
+          returns: "int",
+          args: [],
+        },
+      },
+    });
+
+    try {
+      expect(library.symbols.get_process_id()).toBe(process.pid);
+    } finally {
+      library.close();
+    }
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
 describe("given a source file with syntax errors", () => {
   const source = /* c */ `
     int add(int a, int b) {

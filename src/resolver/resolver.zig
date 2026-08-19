@@ -2915,6 +2915,19 @@ pub const Resolver = struct {
                         //
                         r.dir_cache.markNotFound(queue_top.result);
                         rfs.entries.markNotFound(cached_dir_entry_result);
+                        if (comptime Environment.isAndroid) {
+                            const start_dir = r.fs.topLevelDirWithoutTrailingSlash();
+                            const ancestor_path = strings.withoutTrailingSlashWindowsPath(queue_top.unsafe_path);
+                            if (ancestor_path.len < start_dir.len and
+                                strings.startsWith(start_dir, ancestor_path) and
+                                start_dir[ancestor_path.len] == std.fs.path.sep and
+                                (err == error.AccessDenied or err == error.PermissionDenied))
+                            {
+                                // Android may deny opening a parent such as /data while allowing
+                                // direct access to the already-readable Termux cwd.
+                                break :open_dir .invalid;
+                            }
+                        }
                         switch (@as(anyerror, err)) {
                             error.ENOENT, error.FileNotFound => {},
                             else => {
@@ -2939,6 +2952,8 @@ pub const Resolver = struct {
                     },
                 };
             };
+
+            if (!open_dir.isValid()) continue;
 
             if (!queue_top.fd.isValid()) {
                 Fs.FileSystem.setMaxFd(open_dir.cast());

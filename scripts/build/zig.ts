@@ -40,21 +40,28 @@ export const ZIG_COMMIT = "04e7f6ac1e009525bc00934f20199c68f04e0a24";
  * LLVM modules — parallelises emit, but cross-unit calls become
  * `linkonce_odr` externs so LLVM can't inline or IPO across them.
  *
- * Sharding is gated off for:
+ * With no override, sharding is gated off for:
  *   - Non-ASAN CI: shipped releases want full IPO; cg=1 keeps that and
  *     keeps the upload/download contract a single file.
  *   - Windows targets: COFF shard emission is unimplemented in oven-sh/zig.
  *   - LTO: zig_llvm.cpp gates SplitModule on !lto, so cg>1 would emit one
  *     .o instead of N and the no_merge_shards path would expect missing files.
  *
- * ASAN CI uses a FIXED count (CI_ASAN_CODEGEN_THREADS) so zig-only and
+ * With no override, ASAN CI uses a FIXED count (CI_ASAN_CODEGEN_THREADS) so zig-only and
  * link-only — which run on different machines — agree on the artifact
  * names. Local builds shard at availableParallelism(); benchmark against
- * a non-ASAN CI artifact if cross-unit inlining matters.
+ * a non-ASAN CI artifact if cross-unit inlining matters. Override the
+ * resolved count with $BUN_BUILD_ZIG_CODEGEN_THREADS when a replayable
+ * local count is needed. The override is validated before the safety gates;
+ * a valid override applies to ordinary builds, while Windows or LTO still
+ * force one shard because split emission is unsupported there.
  */
 function codegenThreads(cfg: Config): number {
+  const override = zigCodegenThreadsOverride();
+
   if (cfg.windows) return 1;
   if (cfg.lto) return 1;
+  if (override !== undefined) return override;
   if (cfg.ci) {
     // ASAN is a test-only build (not shipped), so cross-shard IPO loss is
     // fine and the speedup is worth it. The count is FIXED so zig-only and
@@ -67,6 +74,53 @@ function codegenThreads(cfg: Config): number {
 
 /** Fixed shard count for CI ASAN builds. Matches getZigAgent's instance size. */
 export const CI_ASAN_CODEGEN_THREADS = 8;
+
+const MAX_ZIG_CPU_EXPRESSION_LENGTH = 64;
+const ZIG_CPU_EXPRESSION = /^[A-Za-z0-9_]+(?:[+-][A-Za-z0-9_]+)*$/;
+const ZIG_CODEGEN_THREADS_MIN = 1;
+const ZIG_CODEGEN_THREADS_MAX = 64;
+
+function zigCpuOverride(): string | undefined {
+  const value = process.env.BUN_BUILD_ZIG_CPU;
+  if (value === undefined) return undefined;
+
+  const hint = `Set BUN_BUILD_ZIG_CPU to a Zig CPU expression of 1-${MAX_ZIG_CPU_EXPRESSION_LENGTH} characters using only letters, numbers, underscores, '+' and '-'; e.g. cortex_a76 or native+aes.`;
+  if (value.length === 0) {
+    throw new BuildError("BUN_BUILD_ZIG_CPU must not be empty", { hint });
+  }
+  if (value.length > MAX_ZIG_CPU_EXPRESSION_LENGTH) {
+    throw new BuildError(
+      `BUN_BUILD_ZIG_CPU is too long (${value.length} characters; maximum ${MAX_ZIG_CPU_EXPRESSION_LENGTH})`,
+      { hint },
+    );
+  }
+  if (!ZIG_CPU_EXPRESSION.test(value)) {
+    throw new BuildError(`BUN_BUILD_ZIG_CPU is not a safe Zig CPU expression: ${JSON.stringify(value)}`, { hint });
+  }
+  return value;
+}
+
+function zigCodegenThreadsOverride(): number | undefined {
+  const value = process.env.BUN_BUILD_ZIG_CODEGEN_THREADS;
+  if (value === undefined) return undefined;
+
+  const hint = `Set BUN_BUILD_ZIG_CODEGEN_THREADS to a base-10 integer from ${ZIG_CODEGEN_THREADS_MIN} to ${ZIG_CODEGEN_THREADS_MAX}. Windows and LTO builds always use 1.`;
+  if (!/^[0-9]+$/.test(value)) {
+    throw new BuildError(
+      `BUN_BUILD_ZIG_CODEGEN_THREADS must be a strict base-10 integer from ${ZIG_CODEGEN_THREADS_MIN} to ${ZIG_CODEGEN_THREADS_MAX}: ${JSON.stringify(value)}`,
+      { hint },
+    );
+  }
+
+  const threads = Number(value);
+  if (!Number.isSafeInteger(threads) || threads < ZIG_CODEGEN_THREADS_MIN || threads > ZIG_CODEGEN_THREADS_MAX) {
+    throw new BuildError(
+      `BUN_BUILD_ZIG_CODEGEN_THREADS must be between ${ZIG_CODEGEN_THREADS_MIN} and ${ZIG_CODEGEN_THREADS_MAX}: ${JSON.stringify(value)}`,
+      { hint },
+    );
+  }
+  return threads;
+}
 
 /**
  * Output object file names for the zig step, matching what build.zig emits.
@@ -191,6 +245,9 @@ export function zigOptimize(cfg: Config): "Debug" | "ReleaseFast" | "ReleaseSafe
  * x64: nehalem (baseline, pre-AVX), haswell (AVX2).
  */
 export function zigCpu(cfg: Config): string {
+  const override = zigCpuOverride();
+  if (override !== undefined) return override;
+
   if (cfg.arm64) {
     if (cfg.darwin) return "apple_m1";
     if (cfg.windows) return "cortex_a76";

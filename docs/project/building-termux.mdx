@@ -1,0 +1,276 @@
+---
+title: Building Termux on Android
+description: Building Bun natively in Termux on Android
+---
+
+This port builds Bun as a native Android ARM64/AArch64 executable for Termux on Bionic. It does not require PRoot, chroot, or root. The verified final artifact is Bun `1.3.14`, revision `1.3.14+0d9b296af`. This document describes the supported scope of this port and does not claim upstream official Android support.
+
+## Supported scope
+
+| Area                 | Verified value                                                                  |
+| -------------------- | ------------------------------------------------------------------------------- |
+| Environment          | Native Termux on Android ARM64/AArch64 with Bionic                              |
+| Build target         | `linux-aarch64-android` (`aarch64-linux-android.28`)                            |
+| Profile              | `android-release`                                                               |
+| WebKit               | Prebuilt                                                                        |
+| Runtime dependencies | `libc.so`, `libm.so`, `libc++_shared.so`, `libdl.so`                            |
+| Runtime path         | `$PREFIX/lib` (`/data/data/com.termux/files/usr/lib` on the final installation) |
+| TinyCC               | Experimental FFI support, enabled by default for Android in this port           |
+
+The final binary is installed at `$PREFIX/bin/bun`. The active installation is also reached through `~/bin/bun` and `~/.bun/bin/bun`, both of which resolve to that binary.
+
+## Prerequisites
+
+Run these commands in native Termux, not in PRoot or a host Linux environment:
+
+```sh
+pkg update
+pkg install binutils clang file git gzip ninja python tar libc++
+```
+
+You also need the following before configuring the first build:
+
+- A separately supplied Bun bootstrap executable that already runs in this Termux environment.
+- Android NDK r29. The final build used `/data/data/com.termux/files/home/src/android-ndk-termux`; the commands below use it as an example path.
+- Enough free storage for the source tree, NDK, generated dependencies, and release build.
+
+The final executable depends on `$PREFIX/lib/libc++_shared.so`. Keep the Termux `libc++` package installed and verify that file before running the binary.
+
+## Quick path
+
+From the repository root, define the build environment. `PREFIX` is provided by Termux; do not replace it with a host Linux prefix.
+
+```sh
+cd /path/to/bun-termux
+
+: "${PREFIX:?Run this command in native Termux so PREFIX points to the Termux prefix}"
+export BUN_INSTALL="${BUN_INSTALL:-$HOME/.bun}"
+export ANDROID_NDK_ROOT="${ANDROID_NDK_ROOT:-$HOME/src/android-ndk-termux}"
+export BUN_BUILD_ZIG_CPU=cortex_a76
+export BUN_BUILD_ZIG_CODEGEN_THREADS=8
+export BUILD_DIR="$PWD/build/termux-final"
+
+# Supply this separately for the first bootstrap. Later rebuilds can use the
+# installed final Bun as described below.
+: "${BUN_BUILD_BOOTSTRAP:?Set BUN_BUILD_BOOTSTRAP to a separately supplied Bun}"
+
+test -x "$BUN_BUILD_BOOTSTRAP"
+test -d "$ANDROID_NDK_ROOT"
+test -f "$PREFIX/lib/libc++_shared.so"
+
+# These variables can redirect TinyCC away from the paths being proven.
+unset LIBRARY_PATH C_INCLUDE_PATH
+```
+
+The final successful configure used this exact command shape and flag spelling:
+
+```sh
+env -u LIBRARY_PATH BUN_INSTALL="$BUN_INSTALL" BUN_BUILD_BOOTSTRAP="$BUN_BUILD_BOOTSTRAP" ANDROID_NDK_ROOT="$ANDROID_NDK_ROOT" BUN_BUILD_ZIG_CPU=cortex_a76 BUN_BUILD_ZIG_CODEGEN_THREADS=8 "$BUN_BUILD_BOOTSTRAP" scripts/build.ts --profile=android-release --android-ndk="$ANDROID_NDK_ROOT" --build-dir="$BUILD_DIR" --canary=off --configure-only
+```
+
+The recorded final invocation, with the concrete paths used by the successful build, was:
+
+```sh
+env -u LIBRARY_PATH BUN_INSTALL=/data/data/com.termux/files/home/.bun BUN_BUILD_BOOTSTRAP=/data/data/com.termux/files/home/src/bun-termux/build/termux-tinycc-probe/bun ANDROID_NDK_ROOT=/data/data/com.termux/files/home/src/android-ndk-termux BUN_BUILD_ZIG_CPU=cortex_a76 BUN_BUILD_ZIG_CODEGEN_THREADS=8 /data/data/com.termux/files/home/src/bun-termux/build/termux-tinycc-probe/bun scripts/build.ts --profile=android-release --android-ndk=/data/data/com.termux/files/home/src/android-ndk-termux --build-dir=/data/data/com.termux/files/home/src/bun-termux/build/termux-final --canary=off --configure-only
+```
+
+The bootstrap path in the recorded command was a temporary probe binary and was removed during cleanup. Do not copy that path into a new checkout. Replace only the path-valued variables with paths that exist in the current Termux environment. The configure graph confirms that omitting a TinyCC-specific flag resolves to `-Denable_tinycc=true` for this Android build.
+
+Build the configured target with the recorded code-generation thread count:
+
+```sh
+env -u LIBRARY_PATH BUN_INSTALL="$BUN_INSTALL" BUN_BUILD_BOOTSTRAP="$BUN_BUILD_BOOTSTRAP" ANDROID_NDK_ROOT="$ANDROID_NDK_ROOT" BUN_BUILD_ZIG_CPU=cortex_a76 BUN_BUILD_ZIG_CODEGEN_THREADS=8 ninja -C "$BUILD_DIR" -j8 bun
+```
+
+The configure step prints the corresponding `ninja -C ...` command. Do not invoke the host system Bun or a host Linux linker in place of the bootstrap and Android toolchain.
+
+## Bootstrap behavior
+
+The Bun build scripts execute Bun while configuring, fetching dependencies, and generating code. `BUN_BUILD_BOOTSTRAP` names that executable.
+
+- The first Android bootstrap must be supplied separately. It cannot be the final binary before that binary has been built.
+- After installation, the final Bun can self-host subsequent reconfigure and rebuild operations. Set `BUN_BUILD_BOOTSTRAP="$PREFIX/bin/bun"` for those rebuilds.
+- Keep `BUN_INSTALL` set to the intended Bun cache and tool location, normally `$HOME/.bun` in Termux.
+- Keep `LIBRARY_PATH` and `C_INCLUDE_PATH` unset when proving the port. TinyCC accepts those variables, so leaving them set can hide missing default Android paths.
+
+## TinyCC and Android paths
+
+TinyCC-backed `bun:ffi` support is experimental in this port, but it is enabled by default for Android. The final graph contains the TinyCC ARM64 objects and the final native validation passed the standard-header FFI case.
+
+For Android AArch64, the default discovery used by TinyCC is:
+
+- `$PREFIX/include` for standard headers when that directory exists.
+- `/system/lib64` for system libraries when that directory exists.
+
+The final installation has both directories. Keep `$PREFIX/include` available and do not remove the system library directory. The proof deliberately unsets `C_INCLUDE_PATH` and `LIBRARY_PATH` so these defaults, rather than an ambient toolchain, are exercised.
+
+## Verify the build
+
+Verify identity before installation. A hash mismatch is a hard stop.
+
+```sh
+CANDIDATE="$BUILD_DIR/bun"
+EXPECTED_SHA256=8b68f49eb0ee11ebcc3b10dc49f06466450d675ad3abf4a98f985f6698c8a807
+
+test "$(sha256sum "$CANDIDATE" | cut -d ' ' -f 1)" = "$EXPECTED_SHA256"
+test "$("$CANDIDATE" --version)" = 1.3.14
+test "$("$CANDIDATE" --revision)" = 1.3.14+0d9b296af
+file "$CANDIDATE"
+readelf -d "$CANDIDATE"
+```
+
+The expected ELF dynamic metadata is:
+
+```text
+RUNPATH: $PREFIX/lib
+NEEDED: libc.so, libm.so, libc++_shared.so, libdl.so
+```
+
+On the final installation, `readelf -d` reports `/data/data/com.termux/files/usr/lib` as the expanded RUNPATH. Confirm the shared C++ runtime directly:
+
+```sh
+test -f "$PREFIX/lib/libc++_shared.so"
+```
+
+The final ELF has zero debug sections. GNU `strip` may still leave a small `.symtab`, and `file` may report `not stripped`; this is non-blocking and follows the upstream link and strip flags used by this port.
+
+## Acceptance evidence
+
+The authoritative final acceptance totals are:
+
+| Matrix            | Result | Passed | Total |
+| ----------------- | ------ | -----: | ----: |
+| `core`            | PASS   |     37 |    37 |
+| `package_manager` | PASS   |      8 |     8 |
+| `native`          | PASS   |      8 |     8 |
+| `config`          | PASS   |      3 |     3 |
+| `smoke`           | PASS   |      6 |     6 |
+
+The recorded candidate checks are equivalent to these read-only commands:
+
+```sh
+unset LIBRARY_PATH C_INCLUDE_PATH
+sha256sum build/termux-final/bun
+build/termux-final/bun --version
+build/termux-final/bun --revision
+readelf -d build/termux-final/bun
+jq -e '
+  .overall == "PASS" and
+  .candidate.actual_sha256 == .candidate.expected_sha256 and
+  .matrices.core.totals.passed == 37 and .matrices.core.totals.total == 37 and
+  .matrices.package_manager.totals.passed == 8 and .matrices.package_manager.totals.total == 8 and
+  .matrices.native.totals.passed == 8 and .matrices.native.totals.total == 8 and
+  .matrices.config.totals.passed == 3 and .matrices.config.totals.total == 3 and
+  .matrices.smoke.totals.passed == 6 and .matrices.smoke.totals.total == 6
+' build/validation-final/results.json
+```
+
+The final matrix commands and their exit codes are recorded in `build/validation-final/results.json` and `build/validation-final/summary.md`. The authoritative installation and cleanup records are:
+
+- `build/validation-final/install-manifest.txt`
+- `build/validation-final/cleanup-manifest.txt`
+- `build/validation-final/final-install-check.log`
+
+Configure and graph evidence is in `build/termux-final/configure-final.log`, `build/termux-final/configure.json`, `build/termux-final/configure-graph-check.log`, and `build/termux-final/reconfigure-installed-graph-check.log`. The `build/` directory is gitignored. These reports are local proof and must be regenerated locally for a new source revision or environment; they are not a substitute for rerunning validation.
+
+## Distribution artifacts
+
+The final distribution directory contains the raw binary, a deterministic archive, checksums, and a key-value manifest:
+
+```text
+build/termux-final/bun
+build/termux-final/bun-android-aarch64-1.3.14.tar.gz
+build/termux-final/SHA256SUMS
+build/termux-final/bun-termux-final.manifest
+```
+
+The archive contains exactly one member named `bun`, with mode `0755`. Its member mtime is fixed to `2000-01-01T00:00:00Z`; gzip uses mtime `0` and no source filename. Verify the layout and checksums without extracting into the repository:
+
+```sh
+tar -tvf build/termux-final/bun-android-aarch64-1.3.14.tar.gz
+sha256sum -c build/termux-final/SHA256SUMS
+```
+
+For a full proof, extract to a temporary directory outside the repository, compare the extracted `bun` hash with `build/termux-final/bun`, and check `--version`, `--revision`, RUNPATH, and NEEDED there. Do not publish absolute checkout paths or session-private filenames as archive members or gzip metadata.
+
+## Atomic installation
+
+The install procedure preserves the current binary under a date-qualified rollback name and refuses to overwrite an existing rollback copy. The temporary names use the current shell PID rather than a hardcoded session PID. Run this only after the candidate checks pass.
+
+```sh
+set -eu
+
+candidate="$PWD/build/termux-final/bun"
+target="$PREFIX/bin/bun"
+rollback="$PREFIX/bin/bun.pre-termux-final-$(date -u +%Y%m%d)"
+tmp_target="$PREFIX/bin/.bun.install.$$"
+tmp_rollback="$PREFIX/bin/.bun.rollback.$$"
+trap 'rm -f -- "$tmp_target" "$tmp_rollback"' EXIT
+
+test -r "$candidate"
+if [ -e "$rollback" ] || [ -L "$rollback" ]; then
+  printf 'Refusing to overwrite existing rollback: %s\n' "$rollback" >&2
+  exit 1
+fi
+
+install -m 0755 -- "$candidate" "$tmp_target"
+if [ -e "$target" ] || [ -L "$target" ]; then
+  cp -- "$target" "$tmp_rollback"
+  chmod 0755 "$tmp_rollback"
+  ln -- "$tmp_rollback" "$rollback"
+  rm -f -- "$tmp_rollback"
+fi
+mv -fT -- "$tmp_target" "$target"
+```
+
+The final recorded installation used `$PREFIX/bin/bun` and created `$PREFIX/bin/bun.pre-termux-final-20260811`. Its prior binary hash was `1d94de2e9b51f1bfda1f45fc9ef399ffe7c70a66deb7bdb970179476eb646a95`. Future installs should use the command above so an existing rollback is never silently replaced.
+
+## PATH symlink activation
+
+After the atomic install, activate the two user-level command paths. The checks below reject an existing non-symlink instead of replacing it implicitly.
+
+```sh
+set -eu
+
+mkdir -p "$HOME/bin" "$BUN_INSTALL/bin"
+for link in "$HOME/bin/bun" "$BUN_INSTALL/bin/bun"; do
+  if [ -e "$link" ] && [ ! -L "$link" ]; then
+    printf 'Refusing to replace non-symlink: %s\n' "$link" >&2
+    exit 1
+  fi
+done
+ln -sfn -- "$PREFIX/bin/bun" "$HOME/bin/bun"
+ln -sfn -- "$PREFIX/bin/bun" "$BUN_INSTALL/bin/bun"
+hash -r 2>/dev/null || true
+command -v bun
+readlink -f "$HOME/bin/bun"
+readlink -f "$BUN_INSTALL/bin/bun"
+```
+
+The active final binary must hash to `8b68f49eb0ee11ebcc3b10dc49f06466450d675ad3abf4a98f985f6698c8a807` through `$PREFIX/bin/bun`, `~/bin/bun`, and `~/.bun/bin/bun`.
+
+## Rollback
+
+Rollback copies the existing rollback file to a temporary file and atomically replaces the active target. It does not depend on a hardcoded PID.
+
+```sh
+set -eu
+
+target="$PREFIX/bin/bun"
+rollback="$PREFIX/bin/bun.pre-termux-final-$(date -u +%Y%m%d)"
+tmp_rollback="$PREFIX/bin/.bun.rollback.$$"
+trap 'rm -f -- "$tmp_rollback"' EXIT
+
+test -f "$rollback"
+cp -- "$rollback" "$tmp_rollback"
+chmod 0755 "$tmp_rollback"
+mv -fT -- "$tmp_rollback" "$target"
+```
+
+Verify the restored binary with `sha256sum "$PREFIX/bin/bun"`, `"$PREFIX/bin/bun" --version`, and `"$PREFIX/bin/bun" --revision`. Select a different, explicit rollback filename if the date-qualified file already exists; never overwrite it ambiguously.
+
+## Scope boundaries
+
+OMP adaptation is a separate effort and is out of scope for Bun acceptance. It is not a failed Bun capability. The acceptance totals above cover the native Bun port only; do not present OMP results as Bun validation.
+
+The statements in this guide are limited to the native Termux/Android ARM64/Bionic configuration and final evidence described here. They do not establish upstream official Android support.

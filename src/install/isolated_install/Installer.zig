@@ -40,6 +40,11 @@ pub const Installer = struct {
         this.trusted_dependencies_from_update_requests.deinit(this.lockfile.allocator);
     }
 
+    fn isAndroidHardlinkAccessDenied(err: sys.Error) bool {
+        if (comptime !Environment.isAndroid) return false;
+        return err.syscall == .link and err.getErrno() == .ACCES;
+    }
+
     /// Called from main thread
     pub fn startTask(this: *Installer, entry_id: Store.Entry.Id) void {
         const task = &this.tasks[entry_id.get()];
@@ -589,13 +594,20 @@ pub const Installer = struct {
                                 else => unreachable,
                             };
                             // the folder does not exist in the cache. xdev is per folder dependency
-                            const folder_dir = switch (bun.openDirForIteration(FD.cwd(), path)) {
+                            var folder_dir = switch (bun.openDirForIteration(FD.cwd(), path)) {
                                 .result => |fd| fd,
                                 .err => |err| return .failure(.{ .link_package = err }),
                             };
                             defer folder_dir.close();
 
-                            backend: switch (PackageInstall.Method.hardlink) {
+                            backend: switch (installer.supported_backend.load(.monotonic)) {
+                                .clonefile => {
+                                    if (comptime !Environment.isMac) {
+                                        installer.supported_backend.store(.hardlink, .monotonic);
+                                    }
+                                    continue :backend .hardlink;
+                                },
+                                .clonefile_each_dir, .symlink => continue :backend .hardlink,
                                 .hardlink => {
                                     var src: bun.AbsPath(.{ .unit = .os, .sep = .auto }) = .initTopLevelDirLongPath();
                                     defer src.deinit();
@@ -617,7 +629,18 @@ pub const Installer = struct {
                                     switch (try hardlinker.link()) {
                                         .result => {},
                                         .err => |err| {
-                                            if (err.getErrno() == .XDEV) {
+                                            if (err.getErrno() == .XDEV or isAndroidHardlinkAccessDenied(err)) {
+                                                // Hardlinks may have been created before the fallback signal. Remove
+                                                // them before copying so copyfile cannot truncate shared cache inodes.
+                                                FD.cwd().deleteTree(dest.slice()) catch {
+                                                    return .failure(.{ .link_package = err });
+                                                };
+                                                folder_dir.close();
+                                                folder_dir = switch (bun.openDirForIteration(FD.cwd(), path)) {
+                                                    .result => |fd| fd,
+                                                    .err => |reopen_err| return .failure(.{ .link_package = reopen_err }),
+                                                };
+                                                installer.supported_backend.store(.copyfile, .monotonic);
                                                 continue :backend .copyfile;
                                             }
 
@@ -645,6 +668,10 @@ pub const Installer = struct {
                                 .copyfile => {
                                     var src_path: bun.AbsPath(.{ .sep = .auto, .unit = .os }) = .init();
                                     defer src_path.deinit();
+
+                                    if (comptime !Environment.isWindows) {
+                                        src_path = .from(path);
+                                    }
 
                                     if (comptime Environment.isWindows) {
                                         const src_path_len = bun.windows.GetFinalPathNameByHandleW(
@@ -702,8 +729,6 @@ pub const Installer = struct {
                                         },
                                     }
                                 },
-
-                                else => unreachable,
                             }
 
                             continue :next_step this.nextStep(current_step);
@@ -854,7 +879,11 @@ pub const Installer = struct {
                             switch (try hardlinker.link()) {
                                 .result => {},
                                 .err => |err| {
-                                    if (err.getErrno() == .XDEV) {
+                                    if (err.getErrno() == .XDEV or isAndroidHardlinkAccessDenied(err)) {
+                                        // Never copy over partial hardlinks: they still alias cache files.
+                                        FD.cwd().deleteTree(dest_subpath.slice()) catch {
+                                            return .failure(.{ .link_package = err });
+                                        };
                                         installer.supported_backend.store(.copyfile, .monotonic);
                                         continue :backend .copyfile;
                                     }

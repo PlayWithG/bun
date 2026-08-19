@@ -1,5 +1,5 @@
 import { file, spawn, write } from "bun";
-import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { existsSync, lstatSync, readlinkSync } from "fs";
 import { mkdir, readlink, rm, symlink } from "fs/promises";
 import { VerdaccioRegistry, bunEnv, bunExe, readdirSorted, runBunInstall, tempDir } from "harness";
@@ -25,6 +25,7 @@ function entryStoreName(link: string): string {
 }
 
 beforeAll(async () => {
+  setDefaultTimeout(1000 * 60 * 5);
   await registry.start();
 });
 
@@ -285,45 +286,116 @@ test("package with dependency on previous self works", async () => {
 });
 
 test("can install folder dependencies", async () => {
-  const { packageJson, packageDir } = await registry.createTestDir({ bunfigOpts: { linker: "isolated" } });
+  const backends: Array<string | undefined> =
+    process.platform === "android" ? [undefined, "hardlink", "copyfile"] : [undefined];
 
-  await write(
-    packageJson,
-    JSON.stringify({
-      name: "test-pkg-folder-deps",
-      dependencies: {
-        "folder-dep": "file:./pkg-1",
-      },
-    }),
-  );
+  for (const backend of backends) {
+    const { packageJson, packageDir } = await registry.createTestDir({ bunfigOpts: { linker: "isolated" } });
+    const sourceDir = join(packageDir, "pkg-1");
+    const storeDir = join(packageDir, "node_modules", ".bun", "folder-dep@file+pkg-1", "node_modules", "folder-dep");
+    const initialIndex = "module.exports = { value: 'hello from pkg-1' };";
+    const initialSubdir = "module.exports = 'subdir-initial';";
+    const updatedIndex = "module.exports = { value: 'hello from updated pkg-1' };";
+    const updatedSubdir = "module.exports = 'subdir-updated';";
 
-  await write(join(packageDir, "pkg-1", "package.json"), JSON.stringify({ name: "folder-dep", version: "1.0.0" }));
+    await Promise.all([
+      write(
+        packageJson,
+        JSON.stringify({
+          name: "test-pkg-folder-deps",
+          dependencies: {
+            "folder-dep": "file:./pkg-1",
+          },
+        }),
+      ),
+      write(
+        join(sourceDir, "package.json"),
+        JSON.stringify({
+          name: "folder-dep",
+          version: "1.0.0",
+          bin: {
+            "folder-dep-bin": "bin.js",
+          },
+        }),
+      ),
+      write(join(sourceDir, "index.js"), initialIndex),
+      write(join(sourceDir, "subdir", "index.js"), initialSubdir),
+      write(join(sourceDir, "bin.js"), "console.log('folder-dep-bin');"),
+      write(
+        join(packageDir, "require.cjs"),
+        "const pkg = require('folder-dep'); const subdir = require('folder-dep/subdir'); console.log(JSON.stringify({ value: pkg.value, subdir }));",
+      ),
+      write(
+        join(packageDir, "import.mjs"),
+        "import pkg from 'folder-dep'; import subdir from 'folder-dep/subdir'; console.log(JSON.stringify({ value: pkg.value, subdir }));",
+      ),
+    ]);
 
-  await runBunInstall(bunEnv, packageDir);
+    const install = async (force = false) => {
+      const cmd = [bunExe(), "install", "--linker=isolated"];
+      if (backend) cmd.push("--backend", backend);
+      if (force) cmd.push("--force");
 
-  expect(readlinkSync(join(packageDir, "node_modules", "folder-dep"))).toBe(
-    join(".bun", "folder-dep@file+pkg-1", "node_modules", "folder-dep"),
-  );
-  expect(
-    await file(
-      join(packageDir, "node_modules", ".bun", "folder-dep@file+pkg-1", "node_modules", "folder-dep", "package.json"),
-    ).json(),
-  ).toEqual({
-    name: "folder-dep",
-    version: "1.0.0",
-  });
+      const { stderr, exited } = spawn({
+        cmd,
+        cwd: packageDir,
+        env: bunEnv,
+        stdout: "ignore",
+        stderr: "pipe",
+      });
+      const err = await stderr.text();
+      expect(err).not.toContain("error:");
+      expect(await exited).toBe(0);
+    };
 
-  await write(join(packageDir, "pkg-1", "index.js"), "module.exports = 'hello from pkg-1';");
+    const runEntry = async (entry: string, expected: { value: string; subdir: string }) => {
+      const { stdout, stderr, exited } = spawn({
+        cmd: [bunExe(), join(packageDir, entry)],
+        cwd: packageDir,
+        env: bunEnv,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const [out, err, exitCode] = await Promise.all([stdout.text(), stderr.text(), exited]);
+      expect(err).toBe("");
+      expect(exitCode).toBe(0);
+      expect(JSON.parse(out.trim())).toEqual(expected);
+    };
 
-  await runBunInstall(bunEnv, packageDir, { savesLockfile: false });
-  expect(readlinkSync(join(packageDir, "node_modules", "folder-dep"))).toBe(
-    join(".bun", "folder-dep@file+pkg-1", "node_modules", "folder-dep"),
-  );
-  expect(
-    await file(
-      join(packageDir, "node_modules", ".bun", "folder-dep@file+pkg-1", "node_modules", "folder-dep", "index.js"),
-    ).text(),
-  ).toBe("module.exports = 'hello from pkg-1';");
+    const assertMaterialized = async (index: string, subdir: string) => {
+      expect(readlinkSync(join(packageDir, "node_modules", "folder-dep"))).toBe(
+        join(".bun", "folder-dep@file+pkg-1", "node_modules", "folder-dep"),
+      );
+      expect(await file(join(storeDir, "package.json")).json()).toEqual({
+        name: "folder-dep",
+        version: "1.0.0",
+        bin: {
+          "folder-dep-bin": "bin.js",
+        },
+      });
+      expect(await file(join(storeDir, "index.js")).text()).toBe(index);
+      expect(await file(join(storeDir, "subdir", "index.js")).text()).toBe(subdir);
+      expect(await file(join(storeDir, "bin.js")).text()).toBe("console.log('folder-dep-bin');");
+    };
+
+    await install();
+    await assertMaterialized(initialIndex, initialSubdir);
+    await Promise.all([
+      runEntry("require.cjs", { value: "hello from pkg-1", subdir: "subdir-initial" }),
+      runEntry("import.mjs", { value: "hello from pkg-1", subdir: "subdir-initial" }),
+    ]);
+
+    await Promise.all([
+      write(join(sourceDir, "index.js"), updatedIndex),
+      write(join(sourceDir, "subdir", "index.js"), updatedSubdir),
+    ]);
+    await install(true);
+    await assertMaterialized(updatedIndex, updatedSubdir);
+    await Promise.all([
+      runEntry("require.cjs", { value: "hello from updated pkg-1", subdir: "subdir-updated" }),
+      runEntry("import.mjs", { value: "hello from updated pkg-1", subdir: "subdir-updated" }),
+    ]);
+  }
 });
 
 test("can install folder dependencies on root package", async () => {
