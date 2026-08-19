@@ -525,8 +525,6 @@ impl RunCommand {
 
         #[cfg(not(windows))]
         {
-            use const_format::concatcp;
-
             let argv0: &ZStr = bun_core::argv().get(0).unwrap_or(bun_core::zstr!("bun"));
 
             // PREFER `self_exe_path()` OVER `argv[0]`: on a nested `--bun`, the
