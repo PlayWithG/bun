@@ -32,7 +32,15 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            clang cmake file git gzip ninja-build pkg-config python3 tar unzip
+            cmake file git gzip ninja-build pkg-config python3 tar unzip
+          curl --fail --location --retry 5 https://apt.llvm.org/llvm.sh \
+            --output "$RUNNER_TEMP/llvm.sh"
+          chmod +x "$RUNNER_TEMP/llvm.sh"
+          sudo "$RUNNER_TEMP/llvm.sh" 21 all
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-21 100
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-21 100
+          sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-21 100
+          clang --version
 
       - name: Install Android NDK r29
         env:
