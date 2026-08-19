@@ -40,7 +40,7 @@ jobs:
           sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-21 100
           sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-21 100
           sudo update-alternatives --install /usr/bin/ld.lld ld.lld /usr/bin/ld.lld-21 100
-          clang --version
+          clang-21 --version
 
       - name: Install Android NDK r29
         env:
@@ -62,7 +62,7 @@ jobs:
 
       - name: Link NDK compiler runtimes into host Clang
         run: |
-          RESOURCE_DIR=$(clang -print-resource-dir)
+          RESOURCE_DIR=$(clang-21 -print-resource-dir)
           BUILTINS=$(find "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64" \
             -name 'libclang_rt.builtins-aarch64-android.a' -type f -print -quit)
           LIBUNWIND=$(find "$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64" \
