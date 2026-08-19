@@ -81,6 +81,12 @@ jobs:
             "$RESOURCE_DIR/lib/aarch64-unknown-linux-android28" \
             "$RESOURCE_DIR/lib/linux/aarch64"
 
+      - name: Prefer shared libc++ for Termux artifact
+        run: |
+          SHARED_DIR="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android"
+          test -f "$SHARED_DIR/libc++_shared.so"
+          mv "$SHARED_DIR/libc++_static.a" "$RUNNER_TEMP/libc++_static.a.disabled"
+
       - name: Install workspace dependencies
         run: bun install --frozen-lockfile
 
