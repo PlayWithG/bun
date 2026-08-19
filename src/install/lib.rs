@@ -437,7 +437,7 @@ impl RunCommand {
     }
 
     #[cfg(not(windows))]
-    pub(crate) fn bun_node_dir_z() -> &'static ZStr {
+    pub fn bun_node_dir_z() -> &'static ZStr {
         let path = Self::bun_node_dir();
         // `bun_node_dir` is process-lifetime storage and always has a valid
         // UTF-8-free byte path; append the terminator in a separate cache.
