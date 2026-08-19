@@ -65,7 +65,7 @@ function systemLibs(cfg: Config): string[] {
     if (cfg.abi === "android") {
       // bionic: pthread/dl/rt are folded into libc; no separate libatomic
       // (compiler-rt builtins). -llog for __android_log_*.
-      libs.push("-lc", "-lm", "-llog");
+      libs.push("-lc", "-lm", "-llog", "-ldl");
     } else {
       libs.push("-lc", "-lpthread", "-ldl");
       // libatomic: static by default (CI distros ship it), dynamic on Arch-like.
