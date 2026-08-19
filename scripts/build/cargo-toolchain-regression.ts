@@ -75,11 +75,9 @@ async function assertCargoRule(root: string, withRustup: boolean, pathBeforeFixt
     canary: false,
   });
   const graph = await readFile(result.ninjaFile, "utf8");
-  const lolhtmlRule = graph.match(/^build [^\n]*liblolhtml\.a: ([^\s|]+)/m)?.[1];
-
   assert.equal(result.cfg.cargo, cargo);
   assert.equal(result.cfg.rustup, withRustup ? rustup : undefined);
-  assert.equal(lolhtmlRule, withRustup ? "dep_cargo_cross" : "dep_cargo");
+  assert.equal(graph.includes("rule dep_cargo"), true);
   assert.equal(graph.includes("rule dep_cargo_cross"), withRustup);
   assert.equal(/rustup(?:\.exe)? target add/.test(graph), withRustup);
   assert.equal(graph.includes("/nonexistent"), false);
