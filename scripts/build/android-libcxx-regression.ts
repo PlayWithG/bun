@@ -34,7 +34,7 @@ try {
   assert.equal(shared.cfg.androidLibcxxRpath, shared.cfg.host.android ? join(shared.prefix, "lib") : "$ORIGIN/../lib");
   assert.equal(androidSharedRuntimeRpath(false, shared.prefix), "$ORIGIN/../lib");
   const androidSystemLibs = systemLibs(shared.cfg);
-  const dlIndex = androidSystemLibs.indexOf("-ldl");
+  const dlIndex = androidSystemLibs.indexOf("-l:libdl.so");
   assert(dlIndex > 0);
   assert.equal(androidSystemLibs[dlIndex - 1], "-Wl,--no-as-needed");
   assert.equal(androidSystemLibs[dlIndex + 1], "-Wl,--as-needed");
