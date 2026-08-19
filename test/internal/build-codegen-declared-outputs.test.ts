@@ -207,7 +207,14 @@ describe("emitBindgenV2", () => {
       expect(generated).toSpawn("");
 
       const expected = probeFiles.map(name => resolve(cfg.codegenDir, name));
-      expect(normalized(listed.stdout.split(";"))).toEqual(expected);
+      const begin = "BUN_BINDGENV2_LIST_OUTPUTS_BEGIN";
+      const end = "BUN_BINDGENV2_LIST_OUTPUTS_END";
+      const beginIndex = listed.stdout.indexOf(begin);
+      const endIndex = listed.stdout.indexOf(end);
+      expect(beginIndex).toBeGreaterThanOrEqual(0);
+      expect(endIndex).toBeGreaterThan(beginIndex);
+      const payload = listed.stdout.slice(beginIndex + begin.length, endIndex).trim();
+      expect(normalized(payload.split(";"))).toEqual(expected);
       expect(readdirSync(cfg.codegenDir).sort()).toEqual(probeFiles);
     },
     generatorTimeout,
