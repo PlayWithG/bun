@@ -242,43 +242,48 @@ async function test() {
   const root = await mkdtemp(join(tmpdir(), "bun-release-test-"));
   const $ = new Bun.$.Shell().cwd(root);
 
+  const platformArchives: string[] = [];
   for (const platform of config.platforms) {
     if (platform.os !== process.platform) continue;
     if (platform.arch !== process.arch) continue;
-    copy(
-      join(
-        import.meta.dir,
-        "../npm",
-        owner,
-        platform.bin,
-        owner.replace(/^@/, "") + "-" + platform.bin.replaceAll("/", "-") + `-${version}.tgz`,
-      ),
-      join(root, `${platform.bin}-${version}.tgz`),
-    );
+    const archive = owner.replace(/^@/, "") + "-" + platform.bin.replaceAll("/", "-") + `-${version}.tgz`;
+    copy(join(import.meta.dir, "../npm", owner, platform.bin, archive), join(root, archive));
+    platformArchives.push(archive);
   }
+
+  if (platformArchives.length === 0) throw new Error(`No platform package matches ${process.platform}/${process.arch}`);
 
   const rootArchive = module.replace(/^@/, "").replaceAll("/", "-") + "-" + version + ".tgz";
   copy(join(import.meta.dir, "../npm", module, rootArchive), join(root, rootArchive));
 
   console.log(root);
-  for (const [install, exec] of [
+  const installers = [
     ["npm i", "npm exec"],
     ["yarn set version berry; yarn add", "yarn"],
     ["yarn set version latest; yarn add", "yarn"],
     ["pnpm i", "pnpm"],
     ["bun i", "bun run"],
-  ]) {
+  ].filter(([install]) => {
+    const command = install.split(" ", 1)[0];
+    if (Bun.which(command) !== null) return true;
+    console.warn(`Skipping ${command}: executable not found`);
+    return false;
+  });
+  for (const [install, exec] of installers) {
     rmSync(join(root, "node_modules"), { recursive: true, force: true });
     rmSync(join(root, "package-lock.json"), { recursive: true, force: true });
     rmSync(join(root, "package.json"), { recursive: true, force: true });
     rmSync(join(root, "pnpm-lock.yaml"), { recursive: true, force: true });
+    rmSync(join(root, "pnpm-workspace.yaml"), { recursive: true, force: true });
     rmSync(join(root, "yarn.lock"), { recursive: true, force: true });
+    write(join(root, "pnpm-workspace.yaml"), `allowBuilds:\n  "${module}@file:${rootArchive}": true\n`);
     writeJson(join(root, "package.json"), {
       name: "bun-release-test",
+      trustedDependencies: [module],
     });
 
     console.log("Testing", install + " bun");
-    await $`${{ raw: install }} ./bun-${version}.tgz`;
+    await $`${{ raw: install }} ./${rootArchive} ${platformArchives.map(archive => `./${archive}`).join(" ")}`;
 
     console.log("Running " + exec + " bun");
 
