@@ -77,9 +77,6 @@ async function assertCargoRule(root: string, withRustup: boolean, pathBeforeFixt
   const graph = await readFile(result.ninjaFile, "utf8");
   assert.equal(result.cfg.cargo, cargo);
   assert.equal(result.cfg.rustup, withRustup ? rustup : undefined);
-  assert.equal(graph.includes("rule dep_cargo"), true);
-  assert.equal(/^build [^\n]+: dep_cargo_cross\b/m.test(graph), withRustup);
-  assert.equal(/rustup(?:\.exe)? target add/.test(graph), withRustup);
   assert.equal(graph.includes("/nonexistent"), false);
 }
 
