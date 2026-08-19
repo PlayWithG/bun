@@ -1721,18 +1721,6 @@ impl RunCommand {
         Global::exit(1);
     }
 
-    // This path is almost always a path to a user directory. So it cannot be
-    // inlined like our uses of /tmp. On Windows use `GetTempPathW` /
-    // `RealFS.platformTempDir` instead — this const is POSIX-only and
-    // referencing it on Windows is a compile error.
-    //
-    // Canonical definition lives in `bun_install::RunCommand` (lower tier so
-    // the package manager can use it without depending on `bun_runtime`).
-    #[cfg(not(windows))]
-    pub(crate) fn bun_node_dir() -> &'static [u8] {
-        bun_install::RunCommand::bun_node_dir()
-    }
-
     /// Returns the path to the
     /// fake `node` shim that points back at the running `bun` binary.
     pub(crate) fn bun_node_file_utf8() -> crate::Result<&'static ZStr> {
