@@ -1,14 +1,29 @@
 import { isAbsolute, relative } from "path";
 import { unzipSync } from "zlib";
 import { debug, error } from "../console";
-import { fetch } from "../fetch";
-import { chmod, join, link, rename, rm, tmp, write } from "../fs";
+import { exists, chmod, join, link, mkdir, rename, rm, symlink, tmp, write } from "../fs";
 import type { Platform } from "../platform";
 import { abi, arch, os, supportedPlatforms } from "../platform";
 import { spawn } from "../spawn";
 
 declare const version: string;
 declare const module: string;
+
+export function ensureAndroidRuntime(
+  packageRoot: string,
+  runtimeOs: string = os,
+  prefix: string | undefined = process.env["PREFIX"],
+): void {
+  if (runtimeOs !== "android") return;
+  if (!prefix) {
+    throw new Error("Android Bun installs require the Termux PREFIX environment variable");
+  }
+  const source = join(prefix, "lib", "libc++_shared.so");
+  if (!exists(source)) {
+    throw new Error(`Termux libc++ runtime not found at ${source}; install the libc++ package`);
+  }
+  symlink(source, join(packageRoot, "lib", "libc++_shared.so"));
+}
 declare const owner: string;
 
 export async function importBun(): Promise<string> {
@@ -26,9 +41,9 @@ export async function importBun(): Promise<string> {
 }
 
 async function requireBun(platform: Platform): Promise<string> {
-  const module = `${owner}/${platform.bin}`;
   function resolveBun() {
     const exe = require.resolve(join(module, platform.exe));
+    ensureAndroidRuntime(join(exe, "..", ".."));
     const { exitCode, stderr, stdout } = spawn(exe, ["--version"]);
     if (exitCode === 0) {
       return exe;
@@ -78,6 +93,7 @@ function installBun(platform: Platform, dst: string): void {
       },
     );
     if (exitCode === 0) {
+      mkdir(join("node_modules", owner));
       rename(join(cwd, "node_modules", module), dst);
     }
   } finally {
@@ -129,6 +145,7 @@ export function optimizeBun(path: string): void {
   const installScript =
     os === "win32" ? 'powershell -c "irm bun.sh/install.ps1 | iex"' : "curl -fsSL https://bun.com/install | bash";
   try {
+    ensureAndroidRuntime(__dirname);
     rename(path, join(__dirname, "bin", "bun.exe"));
     link(join(__dirname, "bin", "bun.exe"), join(__dirname, "bin", "bunx.exe"));
     return;

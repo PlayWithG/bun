@@ -169,3 +169,22 @@ export function link(path: string, newPath: string): void {
     debug("fs.linkSync failed, reverting to copy", error);
   }
 }
+
+export function mkdir(path: string): void {
+  debug("mkdir", path);
+  fs.mkdirSync(path, { recursive: true });
+}
+
+export function symlink(target: string, newPath: string): void {
+  debug("symlink", target, newPath);
+  try {
+    if (fs.readlinkSync(newPath) === target) return;
+    fs.unlinkSync(newPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+  mkdir(path.dirname(newPath));
+  fs.symlinkSync(target, newPath);
+}

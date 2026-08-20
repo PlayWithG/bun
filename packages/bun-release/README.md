@@ -20,7 +20,7 @@ GITHUB_REPOSITORY=PlayWithG/bun \
   bun run upload-npm -- termux-v1.3.14 publish
 ```
 
-Use `dry-run` to generate packages and `npm pack` tarballs. `publish` is a separate explicit operation and requires npm authentication; this preparation does not publish, push, or create a release. The Termux release provides the raw GitHub asset `bun` at `PlayWithG/bun` release tag `termux-v1.3.14`. Android ARM64 also requires the Termux libc++ runtime (`libc++`).
+Use `dry-run` to generate packages and `npm pack` tarballs. `publish` is a separate explicit operation and requires npm authentication; this preparation does not publish, push, or create a release. The Termux release provides the raw GitHub asset `bun` at the `PlayWithG/bun` release tag matching the package version. Android ARM64 also requires the Termux libc++ runtime (`libc++`); the npm postinstall links `$PREFIX/lib/libc++_shared.so` beside the installed package binary.
 
 The official default remains unscoped `bun` with `@oven/*` platform packages. `BUN_NPM_OWNER` and `BUN_NPM_PLATFORMS` can override the owner and selected platform bins when a different scoped distribution is needed.
 
