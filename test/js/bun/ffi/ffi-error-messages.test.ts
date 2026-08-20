@@ -21,18 +21,18 @@ describe("FFI error messages", () => {
   });
 
   test("dlopen shows which symbol is missing when symbol not found", () => {
-    // Use appropriate system library for the platform
     const libName =
       process.platform === "win32"
         ? "kernel32.dll" // Windows system library
         : process.platform === "darwin"
           ? "libSystem.B.dylib" // macOS system library
-          : isMusl
-            ? process.arch === "arm64"
-              ? "libc.musl-aarch64.so.1" // ARM64 musl
-              : "libc.musl-x86_64.so.1" // x86_64 musl
-            : "libc.so.6"; // glibc
-
+          : process.platform === "android"
+            ? "libc.so" // Android/Bionic system library
+            : isMusl
+              ? process.arch === "arm64"
+                ? "libc.musl-aarch64.so.1" // ARM64 musl
+                : "libc.musl-x86_64.so.1" // x86_64 musl
+              : "libc.so.6"; // glibc
     // Try to load a non-existent symbol
     try {
       dlopen(libName, {

@@ -456,6 +456,8 @@ enum DeferredError {
 static CACHED_DEFAULT_SYSTEM_INCLUDE_DIR: OnceLock<bun_core::ZBox> = OnceLock::new();
 #[cfg(any(target_os = "linux", target_os = "android"))]
 static CACHED_DEFAULT_SYSTEM_LIBRARY_DIR: OnceLock<bun_core::ZBox> = OnceLock::new();
+#[cfg(target_os = "android")]
+static CACHED_ANDROID_TARGET_INCLUDE_DIR: OnceLock<bun_core::ZBox> = OnceLock::new();
 #[cfg(any(target_os = "macos", target_os = "linux", target_os = "android"))]
 static CACHED_DEFAULT_SYSTEM_INCLUDE_DIR_ONCE: Once = Once::new();
 
@@ -568,6 +570,17 @@ impl CompileC {
                 if dynamic_dir_exists(include_bytes) {
                     let _ = CACHED_DEFAULT_SYSTEM_INCLUDE_DIR.set(ZBox::from_bytes(include_bytes));
                 }
+                let target_dir_name = if cfg!(target_arch = "aarch64") {
+                    "aarch64-linux-android"
+                } else {
+                    "arm-linux-androideabi"
+                };
+                let target_include_dir = include_dir.join(target_dir_name);
+                let target_include_bytes = target_include_dir.as_os_str().as_bytes();
+                if dynamic_dir_exists(target_include_bytes) {
+                    let _ = CACHED_ANDROID_TARGET_INCLUDE_DIR
+                        .set(ZBox::from_bytes(target_include_bytes));
+                }
             }
         }
 
@@ -631,6 +644,14 @@ impl CompileC {
             .filter(|d| !d.is_empty())
     }
 
+#[cfg(target_os = "android")]
+fn get_android_target_include_dir() -> Option<&'static ZStr> {
+    CACHED_DEFAULT_SYSTEM_INCLUDE_DIR_ONCE.call_once(Self::get_system_root_dir_once);
+    CACHED_ANDROID_TARGET_INCLUDE_DIR
+        .get()
+        .map(|b| b.as_zstr())
+        .filter(|d| !d.is_empty())
+}
     #[cfg(any(target_os = "linux", target_os = "android"))]
     fn get_system_library_dir() -> Option<&'static ZStr> {
         CACHED_DEFAULT_SYSTEM_INCLUDE_DIR_ONCE.call_once(Self::get_system_root_dir_once);
@@ -751,6 +772,12 @@ impl CompileC {
             if let Some(include_dir) = Self::get_system_include_dir() {
                 if state.add_sys_include_path(include_dir).is_err() {
                     bun_output::scoped_log!(TCC, "TinyCC failed to add sysinclude path");
+                }
+            }
+            #[cfg(target_os = "android")]
+            if let Some(include_dir) = Self::get_android_target_include_dir() {
+                if state.add_sys_include_path(include_dir).is_err() {
+                    bun_output::scoped_log!(TCC, "TinyCC failed to add Android target sysinclude path");
                 }
             }
 

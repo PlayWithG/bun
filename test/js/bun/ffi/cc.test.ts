@@ -101,7 +101,7 @@ describe.skipIf(isASAN)("given an add(a, b) function", () => {
   });
 }); // </given add(a, b) function>
 
-it.skipIf(process.platform !== "android" || isASAN || isFFIUnavailable)("cc() links against Android libc", async () => {
+it.skipIf(process.platform !== "android" || isASAN)("cc() links against Android libc", async () => {
   const dir = tempDirWithFiles("bun-ffi-cc-android-libc", {
     "getpid.c": /* c */ `
       #include <stdint.h>
