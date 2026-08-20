@@ -123,8 +123,10 @@ without *requiring* a postinstall script.
 `,
   );
   writeJson(join(cwd, "package.json"), rootPackageMetadata(config, version, Boolean(dryRun)));
-  if (exists(".npmrc") && process.env.NPM_TOKEN) {
+  if (process.env.NPM_TOKEN && exists(".npmrc")) {
     copy(".npmrc", join(cwd, ".npmrc"));
+  } else {
+    rmSync(join(cwd, ".npmrc"), { force: true });
   }
 }
 
@@ -158,8 +160,10 @@ async function buildModule(
   write(join(cwd, exe), bun instanceof ArrayBuffer ? bun : await bun.async("arraybuffer"));
   chmod(join(cwd, exe), 0o755);
   writeJson(join(cwd, "package.json"), platformPackageMetadata({ bin, exe, os, arch }, module, version));
-  if (exists(".npmrc") && process.env.NPM_TOKEN) {
+  if (process.env.NPM_TOKEN && exists(".npmrc")) {
     copy(".npmrc", join(cwd, ".npmrc"));
+  } else {
+    rmSync(join(cwd, ".npmrc"), { force: true });
   }
 }
 
