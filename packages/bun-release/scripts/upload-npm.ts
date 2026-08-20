@@ -1,7 +1,7 @@
 import { expect } from "bun:test";
 import type { BuildOptions } from "esbuild";
 import { buildSync, formatMessagesSync } from "esbuild";
-import { mkdirSync, rmSync } from "fs";
+import { mkdirSync, readdirSync, rmSync } from "fs";
 import { mkdtemp } from "fs/promises";
 import type { JSZipObject } from "jszip";
 import { loadAsync } from "jszip";
@@ -194,7 +194,10 @@ function publishModule(name: string, dryRun?: boolean): void {
       throw new Error("npm publish failed with code " + exitCode);
     }
   } else {
-    rmSync(join("npm", name, archive), { force: true });
+    const packageDir = join("npm", name);
+    for (const entry of readdirSync(packageDir)) {
+      if (entry.endsWith(".tgz")) rmSync(join(packageDir, entry), { force: true });
+    }
     const { exitCode, stdout, stderr } = spawn("npm", ["pack"], {
       cwd: join("npm", name),
     });
