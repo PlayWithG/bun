@@ -11,28 +11,23 @@ pub type TCCErrorFunc = Option<unsafe extern "C" fn(opaque: *mut c_void, msg: *c
 /// Typed error callback signature for a given context type.
 pub type ErrorFunc<Ctx> = unsafe extern "C" fn(ctx: *mut Ctx, msg: *const c_char);
 
-// `libtcc.a` is only built where `cfg.tinycc` is true (`scripts/build/config.ts`):
-// not Android, not FreeBSD (the vendored fork doesn't support those targets).
-// On those platforms these `extern "C"` decls would be undefined at link:
-// `bun_runtime::ffi::ffi_body::{Source::add,
-// CompileC::compile}` are reachable from `extern "C"` JS bindings and the
-// monomorphized refs land in `libbun_rust.a` regardless of any
-// `if !ENABLE_TINYCC { return }` runtime guard. Swap the `extern` block for
-// stub *definitions* on those targets so the link resolves; the gated Rust
-// callers never reach them at runtime (they early-return with "not available
-// in this build"), and the `unreachable!()` makes any future gate regression
-// loud rather than silently UB.
+// `libtcc.a` is built wherever `cfg.tinycc` is true (`scripts/build/config.ts`):
+// Android and non-ARM64 Windows are supported; FreeBSD and Windows ARM64 are
+// disabled. On disabled targets these `extern "C"` declarations would be
+// undefined at link because the Rust FFI bindings remain reachable from JS.
+// Use loud stubs only on those disabled targets so a future gate mismatch cannot
+// become silent undefined behavior.
 //
 // Keep this predicate in sync with `cfg.tinycc` in `scripts/build/config.ts`
 // and `ENABLE_TINYCC` in `scripts/build/buildOptionsRs.ts`.
 macro_rules! tcc_externs {
     ($($(#[$attr:meta])* fn $name:ident($($arg:ident: $ty:ty),* $(,)?) $(-> $ret:ty)?;)*) => {
-        #[cfg(not(any(target_os = "android", target_os = "freebsd")))]
+        #[cfg(not(any(target_os = "freebsd", all(target_os = "windows", target_arch = "aarch64"))))]
         unsafe extern "C" {
             $($(#[$attr])* fn $name($($arg: $ty),*) $(-> $ret)?;)*
         }
         $(
-            #[cfg(any(target_os = "android", target_os = "freebsd"))]
+            #[cfg(any(target_os = "freebsd", all(target_os = "windows", target_arch = "aarch64")))]
             #[allow(unused_variables, clippy::missing_safety_doc)]
             unsafe extern "C" fn $name($($arg: $ty),*) $(-> $ret)? {
                 unreachable!(concat!(
