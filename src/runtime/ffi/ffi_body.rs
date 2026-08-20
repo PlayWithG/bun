@@ -33,6 +33,12 @@ fn dir_exists(path: &'static [u8]) -> bool {
     let z = ZBox::from_bytes(path);
     bun_sys::directory_exists_at(bun_sys::Fd::cwd(), &z).unwrap_or(false)
 }
+#[cfg(unix)]
+#[inline]
+fn dynamic_dir_exists(path: &[u8]) -> bool {
+    let z = ZBox::from_bytes(path);
+    bun_sys::directory_exists_at(bun_sys::Fd::cwd(), &z).unwrap_or(false)
+}
 
 /// `bun.String.toJSArray` — local shim over `JSValue::create_array_from_iter`.
 fn strings_to_js_array(global: &JSGlobalObject, strs: &[bun_core::String]) -> JsResult<JSValue> {
@@ -543,7 +549,29 @@ impl CompileC {
             }
             let _ = CACHED_DEFAULT_SYSTEM_INCLUDE_DIR.set(bun_core::ZBox::from_bytes(trimmed));
         }
-        #[cfg(any(target_os = "linux", target_os = "android"))]
+        #[cfg(target_os = "android")]
+        {
+            use std::os::unix::ffi::OsStrExt;
+
+            let library_dir: &'static [u8] = if cfg!(target_arch = "aarch64") {
+                b"/system/lib64"
+            } else {
+                b"/system/lib"
+            };
+            if dir_exists(library_dir) {
+                let _ = CACHED_DEFAULT_SYSTEM_LIBRARY_DIR.set(ZBox::from_bytes(library_dir));
+            }
+
+            if let Some(prefix) = std::env::var_os("PREFIX") {
+                let include_dir = std::path::Path::new(&prefix).join("include");
+                let include_bytes = include_dir.as_os_str().as_bytes();
+                if dynamic_dir_exists(include_bytes) {
+                    let _ = CACHED_DEFAULT_SYSTEM_INCLUDE_DIR.set(ZBox::from_bytes(include_bytes));
+                }
+            }
+        }
+
+        #[cfg(target_os = "linux")]
         {
             // On Debian/Ubuntu, the lib and include paths are suffixed with {arch}-linux-gnu
             // e.g. x86_64-linux-gnu or aarch64-linux-gnu
