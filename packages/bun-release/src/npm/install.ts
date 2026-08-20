@@ -41,6 +41,7 @@ export async function importBun(): Promise<string> {
 }
 
 async function requireBun(platform: Platform): Promise<string> {
+  const module = `${owner}/${platform.bin}`;
   function resolveBun() {
     const exe = require.resolve(join(module, platform.exe));
     ensureAndroidRuntime(join(exe, "..", ".."));
