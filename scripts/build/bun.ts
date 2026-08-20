@@ -66,7 +66,15 @@ export function systemLibs(cfg: Config): string[] {
       // Android exposes loader APIs through Bionic, but --as-needed can drop
       // libdl after the Rust/C++ references are reached through static archives.
       // Keep the dynamic libdl dependency in the final ELF for dlopen/dlsym.
-      libs.push("-lc", "-lm", "-llog", "-Wl,--no-as-needed", "-l:libdl.so", "-Wl,--as-needed");
+      libs.push(
+        "-lc",
+        "-lm",
+        "-llog",
+        ...(cfg.host.android ? ["-L/system/lib64"] : []),
+        "-Wl,--no-as-needed",
+        "-l:libdl.so",
+        "-Wl,--as-needed",
+      );
     } else {
       libs.push("-lc", "-lpthread", "-ldl");
       // libatomic: static by default (CI distros ship it), dynamic on Arch-like.

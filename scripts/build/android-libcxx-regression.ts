@@ -38,6 +38,7 @@ try {
   assert(dlIndex > 0);
   assert.equal(androidSystemLibs[dlIndex - 1], "-Wl,--no-as-needed");
   assert.equal(androidSystemLibs[dlIndex + 1], "-Wl,--as-needed");
+  if (shared.cfg.host.android) assert(androidSystemLibs.includes("-L/system/lib64"));
 
   const crossCfg = {
     ...shared.cfg,
