@@ -13,6 +13,7 @@ import { androidSharedRuntimeRpath, resolveConfig, type Config, type Toolchain }
 import { BuildError } from "./error.ts";
 import { computeFlags } from "./flags.ts";
 import { systemLibs } from "./bun.ts";
+import { generateBuildOptionsRs } from "./buildOptionsRs.ts";
 import { Ninja } from "./ninja.ts";
 
 const repoRoot = resolve(import.meta.dirname, "../..");
@@ -39,6 +40,10 @@ try {
   assert.equal(androidSystemLibs[dlIndex - 1], "-Wl,--no-as-needed");
   assert.equal(androidSystemLibs[dlIndex + 1], "-Wl,--as-needed");
   if (shared.cfg.host.android) assert(androidSystemLibs.includes("-L/system/lib64"));
+  const buildOptions = await readFile(generateBuildOptionsRs(shared.cfg), "utf8");
+  assert(buildOptions.includes('all(target_os = "windows", target_arch = "aarch64")'));
+  assert(buildOptions.includes('target_os = "freebsd"'));
+  assert(!buildOptions.includes('target_os = "android"'));
 
   const crossCfg = {
     ...shared.cfg,

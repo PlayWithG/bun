@@ -2,7 +2,7 @@
  * TinyCC — small embeddable C compiler. Powers bun:ffi's JIT-compile path,
  * where user-provided C gets compiled and linked at runtime.
  *
- * Disabled on Android and FreeBSD — see cfg.tinycc in config.ts.
+ * Disabled on FreeBSD and Windows ARM64 — see cfg.tinycc in config.ts.
  *
  * Built via DirectBuild — no cmake sub-process. The old overlay
  * CMakeLists.txt had two recurring ASAN workarounds for the c2str host
